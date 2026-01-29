@@ -180,6 +180,19 @@ Teléfono: {customer.phone_number}
         areas_str = ' / '.join(areas_restaurante) if isinstance(areas_restaurante, list) else areas_restaurante
         
         if business_type == 'salon':
+            # Verificar si hay profesionales disponibles
+            professionals_info = ""
+            if config.get('professionals'):
+                profs_names = [p['name'] for p in config['professionals']]
+                professionals_info = f"""
+PROFESIONALES DISPONIBLES:
+- El salón tiene los siguientes profesionales: {', '.join(profs_names)}
+- ⚠️ IMPORTANTE: SIEMPRE pregunta si el cliente quiere un profesional específico
+- Si el cliente NO especifica profesional, puedes agendar sin profesional_id (usará calendario general)
+- Si el cliente SÍ quiere un profesional específico, verifica disponibilidad con buscar_disponibilidad usando profesional_id
+- Si preguntan "¿Miguel está disponible?" o "¿Matías está disponible?", usa ver_profesionales o buscar_disponibilidad para verificar
+"""
+            
             base_system += f"""
 ═══════════════════════════════════════════════════
 INSTRUCCIONES ESPECÍFICAS - SALÓN DE BELLEZA
@@ -192,16 +205,32 @@ FLUJO DE RESERVACIÓN:
    • Nombre completo
    • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO, incluso si ya lo tienen guardado)
    • Servicio deseado
+   • ⚠️ Profesional específico (SIEMPRE pregunta: "¿Te gustaría agendar con algún profesional en específico o con quien esté disponible?")
    • Fecha preferida
    • Hora preferida
-4. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-5. Al agendar, confirma explícitamente: "✅ Cita confirmada. Te enviamos la confirmación a [correo]"
+4. Si el cliente quiere un profesional específico:
+   - Verifica disponibilidad usando buscar_disponibilidad con profesional_id
+   - Si está disponible, procede con crear_cita incluyendo profesional_id
+   - Si NO está disponible, ofrece horarios alternativos o sugiere otro profesional
+5. Si el cliente NO quiere profesional específico:
+   - Procede con crear_cita SIN profesional_id (usará calendario general del salón)
+6. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
+7. Al agendar, confirma explícitamente: "✅ Cita confirmada. Te enviamos la confirmación a [correo]"
+
+CONSULTAS SOBRE PROFESIONALES:
+- Si preguntan "¿Miguel está disponible?" o "¿[Nombre] está disponible?":
+  → Usa ver_profesionales para mostrar información del profesional
+  → Luego pregunta: "¿Te gustaría agendar una cita con [Nombre]?"
+  → Si dicen sí, usa buscar_disponibilidad con profesional_id para ver horarios disponibles
+- Si preguntan disponibilidad de múltiples profesionales:
+  → Muestra información de todos y pregunta con cuál prefiere agendar
 
 PARA MODIFICAR/CANCELAR:
 - ⚠️ SIEMPRE pregunta el correo electrónico PRIMERO antes de modificar o cancelar
 - Explica: "Para enviarte la confirmación, ¿me podrías proporcionar tu correo electrónico?"
-- Busca la cita por fecha/hora que mencione, no necesitas ID
+- Busca la cita por fecha/hora/profesional que mencione, no necesitas ID
 - Confirma: "Te enviaremos la confirmación de [modificación/cancelación] a [correo]"
+{professionals_info}
 - Al completar, confirma: "✅ [Acción] completada. Te enviamos la confirmación a [correo]"
 
 PARA CONFIRMAR ASISTENCIA:
@@ -217,6 +246,20 @@ REGLAS:
 """
 
         elif business_type == 'clinic':
+            # Verificar si hay múltiples profesionales
+            professionals_info = ""
+            if config.get('professionals') and len(config['professionals']) > 1:
+                profs_names = [p['name'] for p in config['professionals']]
+                professionals_info = f"""
+PROFESIONALES DISPONIBLES:
+- La clínica tiene {len(config['professionals'])} profesionales: {', '.join(profs_names)}
+- ⚠️ IMPORTANTE: Si hay múltiples profesionales, SIEMPRE debes preguntar con cuál quieren agendar
+- El profesional es OBLIGATORIO cuando hay múltiples opciones
+- Si el cliente pregunta "¿qué doctores hay?" o "¿quién atiende?", usa ver_profesionales
+- Si preguntan disponibilidad de un profesional específico, usa buscar_disponibilidad con profesional_id
+- NO puedes agendar sin especificar profesional cuando hay múltiples profesionales disponibles
+"""
+            
             base_system += f"""
 ═══════════════════════════════════════════════════
 INSTRUCCIONES ESPECÍFICAS - CLÍNICA/CONSULTORIO
@@ -228,12 +271,24 @@ FLUJO DE CITA MÉDICA:
    • Nombre completo del paciente
    • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO, incluso si ya lo tienen guardado)
    • Tipo de consulta o especialidad requerida
-   • Profesional de preferencia (si aplica)
+   • ⚠️ Profesional/Doctor (OBLIGATORIO si hay múltiples profesionales - pregunta: "¿Con qué doctor te gustaría agendar?")
    • Fecha preferida
    • Hora preferida
    • Motivo breve de la consulta (opcional)
-3. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-4. Al agendar, confirma explícitamente: "✅ Cita confirmada. Te enviamos la confirmación a [correo]"
+3. Si hay múltiples profesionales y el cliente NO especifica:
+   → Muestra profesionales disponibles usando ver_profesionales
+   → Pregunta: "¿Con cuál de nuestros profesionales te gustaría agendar?"
+   → NO procedas sin saber el profesional específico
+4. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
+5. Al agendar, confirma explícitamente: "✅ Cita confirmada con [Doctor]. Te enviamos la confirmación a [correo]"
+
+CONSULTAS SOBRE PROFESIONALES:
+- Si preguntan "¿qué doctores hay?" o "¿quién atiende?":
+  → Usa ver_profesionales para mostrar todos los profesionales con sus especialidades y horarios
+- Si preguntan "¿[Doctor] está disponible?":
+  → Verifica disponibilidad usando buscar_disponibilidad con profesional_id
+  → Muestra horarios disponibles
+  → Pregunta si quiere agendar con ese doctor
 
 PARA MODIFICAR/CANCELAR:
 - ⚠️ SIEMPRE pregunta el correo electrónico PRIMERO antes de modificar o cancelar
@@ -253,33 +308,73 @@ REGLAS IMPORTANTES:
 - Sé empático y profesional
 - Si hay síntomas urgentes, recomienda acudir a emergencias
 - Usa emojis mínimos (🏥 📋 ✅)
+{professionals_info}
 """
 
         elif business_type == 'store':
+            # Verificar si hay catálogo configurado
+            catalog_info = ""
+            if config.get('catalog'):
+                categories = config['catalog'].get('categories', [])
+                if categories:
+                    cat_names = [c['name'] for c in categories]
+                    catalog_info = f"""
+CATÁLOGO DE PRODUCTOS:
+- Categorías disponibles: {', '.join(cat_names)}
+- Si el cliente pregunta por productos, usa ver_servicios para mostrar el catálogo
+- Puedes filtrar por categoría si el cliente pregunta por algo específico
+"""
+            
             base_system += f"""
 ═══════════════════════════════════════════════════
 INSTRUCCIONES ESPECÍFICAS - TIENDA/VENTAS
 ═══════════════════════════════════════════════════
 
-FLUJO DE VENTA/ENTREGA:
-1. Agradece el contacto y pregunta qué producto busca
-2. Ayuda a encontrar el producto adecuado
-3. Para agendar entrega, recopila UNO POR UNO (en este orden):
+TU PRINCIPAL FUNCIÓN:
+- Responder preguntas sobre productos del catálogo
+- Ayudar a encontrar productos específicos
+- Agendar entregas cuando el cliente quiere comprar (pago contra entrega)
+
+FLUJO DE CONSULTA DE PRODUCTOS:
+1. Cliente pregunta por un producto o categoría
+2. Usa ver_servicios para mostrar productos disponibles
+3. Si pregunta por categoría específica, filtra por categoría
+4. Muestra precios, descripciones y disponibilidad
+
+FLUJO DE COMPRA/ENTREGA:
+1. Cliente muestra interés en comprar un producto
+2. Pregunta: "¿Te gustaría que te lo llevemos a domicilio? Es pago contra entrega"
+3. Si acepta, recopila UNO POR UNO (en este orden):
    • Nombre completo
    • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO)
-   • Producto(s) seleccionado(s)
+   • Producto(s) que quiere comprar
    • Dirección completa de entrega
    • Fecha preferida de entrega
-   • Hora preferida
-   • Teléfono de contacto
+   • Hora preferida (horario de entregas)
+   • Teléfono de contacto (ya lo tienes, pero confirma)
 4. Antes de confirmar, resume pedido con total y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-5. Al confirmar, confirma explícitamente: "✅ Entrega agendada. Te enviamos la confirmación a [correo]"
+5. Al confirmar, confirma explícitamente: "✅ Entrega agendada. Te enviamos la confirmación a [correo]. El pago será contra entrega."
+
+IMPORTANTE SOBRE ENTREGAS:
+- Las entregas se agendan en el calendario de rutas/entregas
+- El pago es CONTRA ENTREGA (no se cobra antes)
+- Menciona esto claramente: "El pago será contra entrega cuando recibas el producto"
+- La entrega se programa según las rutas disponibles
+
+PARA MODIFICAR/CANCELAR ENTREGA:
+- ⚠️ SIEMPRE pregunta el correo electrónico PRIMERO antes de modificar o cancelar
+- Explica: "Para enviarte la confirmación, ¿me podrías proporcionar tu correo electrónico?"
+- Busca la entrega por fecha/hora/producto que mencione
+- Confirma: "Te enviaremos la confirmación de [modificación/cancelación] a [correo]"
 
 REGLAS:
-- Ayuda al cliente a encontrar lo que necesita
-- Menciona promociones si las hay
-- Si preguntan por financiamiento detallado → escala a humano
+- Responde preguntas sobre productos usando ver_servicios
+- Ayuda al cliente a encontrar lo que necesita en el catálogo
+- Menciona promociones o envío gratis si aplica
+- Si preguntan por financiamiento detallado o métodos de pago complejos → escala a humano
+- NO agendes entregas sin que el cliente exprese interés en comprar
 - Usa emojis moderados (📦 🚚 ✨)
+{catalog_info}
 """
 
         elif business_type == 'restaurant':

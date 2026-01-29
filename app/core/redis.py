@@ -1,6 +1,10 @@
 import redis.asyncio as redis
 from app.core.config import settings
 import json
+import logging
+import asyncio
+
+logger = logging.getLogger(__name__)
 
 # Cliente Redis global
 redis_client: redis.Redis | None = None
@@ -15,10 +19,31 @@ async def init_redis() -> redis.Redis:
     redis_client = redis.from_url(
         settings.REDIS_URL,
         encoding="utf-8",
-        decode_responses=True
+        decode_responses=True,
+        socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=settings.REDIS_SOCKET_TIMEOUT_SECONDS,
+        retry_on_timeout=True,
     )
     # Verificar conexión
-    await redis_client.ping()
+    try:
+        await asyncio.wait_for(
+            redis_client.ping(),
+            timeout=settings.REDIS_CONNECT_TIMEOUT_SECONDS + settings.REDIS_SOCKET_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # Cerrar el cliente para no dejar conexiones colgadas
+        try:
+            await redis_client.close()
+        except Exception:
+            pass
+        redis_client = None
+        logger.exception(
+            "No se pudo conectar a Redis (url=%s, connect_timeout=%ss, socket_timeout=%ss).",
+            settings.REDIS_URL,
+            settings.REDIS_CONNECT_TIMEOUT_SECONDS,
+            settings.REDIS_SOCKET_TIMEOUT_SECONDS,
+        )
+        raise
     return redis_client
 
 

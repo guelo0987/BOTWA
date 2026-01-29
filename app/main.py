@@ -62,8 +62,21 @@ async def lifespan(app: FastAPI):
     
     # Inicializar Redis
     logger.info("🔴 Conectando a Redis...")
-    await init_redis()
-    logger.info("Redis conectado")
+    try:
+        await init_redis()
+        logger.info("Redis conectado")
+    except Exception as e:
+        if settings.REDIS_REQUIRED:
+            logger.error(
+                "Redis es requerido y no se pudo conectar. "
+                "Revisa REDIS_URL o levanta Redis. Error: %s",
+                str(e),
+            )
+            raise
+        logger.warning(
+            "Redis no disponible; iniciando en modo degradado (sin memoria). Error: %s",
+            str(e),
+        )
     
     # Iniciar scheduler automático
     logger.info("⏰ Iniciando scheduler automático...")

@@ -25,8 +25,11 @@ TOOL_DEFINITIONS = [
             # ----- HERRAMIENTAS DE INFORMACIÓN -----
             types.FunctionDeclaration(
                 name="ver_servicios",
-                description="""Muestra los servicios/productos disponibles con precios.
-                Usa cuando el usuario pregunte: qué servicios hay, cuánto cuesta, qué productos tienen, ver catálogo, menú, etc.""",
+                description="""Muestra servicios o productos disponibles según el tipo de negocio.
+                - Para SALONES: muestra servicios (corte, tinte, etc.) con precios
+                - Para TIENDAS: muestra catálogo de productos (usa esto para responder preguntas sobre productos del catálogo)
+                - Para RESTAURANTES: muestra menú si está disponible
+                Usa cuando el usuario pregunte: qué servicios hay, qué productos tienen, ver catálogo, cuánto cuesta, buscar producto, etc.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
@@ -97,7 +100,7 @@ TOOL_DEFINITIONS = [
                         ),
                         "profesional_id": types.Schema(
                             type=types.Type.STRING,
-                            description="ID o nombre del profesional (solo clínicas)"
+                            description="ID o nombre del profesional (clínicas y salones). Si es salón y no especifica profesional, usar null o omitir este campo para usar calendario general."
                         ),
                         "direccion": types.Schema(
                             type=types.Type.STRING,
@@ -492,7 +495,13 @@ class ToolExecutor:
     # CREAR CITA / RESERVACIÓN / ENTREGA
     # ==========================================
     async def _crear_cita(self, args: dict) -> str:
-        """Crea una cita según tipo de negocio."""
+        """Crea una cita según tipo de negocio.
+        
+        Para CLÍNICAS: profesional_id es OBLIGATORIO si hay múltiples profesionales
+        Para SALONES: profesional_id es OPCIONAL (puede ser None para usar calendario general)
+        Para TIENDAS: crea entrega/ruta (direccion es requerida)
+        Para RESTAURANTES: crea reservación (num_personas es requerida)
+        """
         try:
             fecha_str = args.get("fecha")
             hora_str = args.get("hora")
@@ -503,6 +512,18 @@ class ToolExecutor:
             email = args.get("email")
             area = args.get("area")
             ocasion = args.get("ocasion")
+            
+            # VALIDACIÓN: Para clínicas con múltiples profesionales, profesional_id es obligatorio
+            if self.business_type == "clinic" and self.config.get("professionals") and len(self.config["professionals"]) > 1:
+                if not profesional_id:
+                    profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
+                    return f"Para agendar tu cita, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
+            
+            # VALIDACIÓN: Para clínicas con múltiples profesionales, profesional_id es obligatorio
+            if self.business_type == "clinic" and self.config.get("professionals") and len(self.config["professionals"]) > 1:
+                if not profesional_id:
+                    profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
+                    return f"Para agendar tu cita médica, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
             
             tz = pytz.timezone(self.config.get('timezone', 'America/Santo_Domingo'))
             fecha = datetime.strptime(f"{fecha_str} {hora_str}", "%Y-%m-%d %H:%M")
@@ -544,7 +565,7 @@ class ToolExecutor:
             profesional_nombre = None
             precio_servicio = None
             
-            # CASO: Clínica con profesional
+            # CASO: Profesional específico (Clínica o Salón)
             if profesional_id and self.config.get("professionals"):
                 # Buscar por ID exacto primero
                 prof = next((p for p in self.config["professionals"] if p["id"] == profesional_id), None)
@@ -555,11 +576,15 @@ class ToolExecutor:
                                 if profesional_lower in p.get("name", "").lower() 
                                 or profesional_lower in p.get("id", "").lower()), None)
                 if prof:
-                    calendar_id = prof.get("calendar_id")
-                    duration = prof.get("slot_duration", 30)
+                    # Si el profesional tiene su propio calendario, usarlo
+                    if prof.get("calendar_id"):
+                        calendar_id = prof.get("calendar_id")
+                    # Si no tiene calendario propio, usar el general pero marcar el profesional
                     titulo_prefix = f"{prof['name']} - "
                     profesional_nombre = prof['name']
                     descripcion_extra = f"\nProfesional: {prof['name']}"
+                    if prof.get("slot_duration"):
+                        duration = prof.get("slot_duration", duration)
                 else:
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"No encontré a '{profesional_id}'. Los profesionales disponibles son: {profs_list}"

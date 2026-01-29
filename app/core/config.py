@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # REDIS (Memoria de conversaciones)
     # ==========================================
     REDIS_URL: str
+    # Timeouts para evitar "cuelgues" al conectar
+    REDIS_CONNECT_TIMEOUT_SECONDS: float = 3.0
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 3.0
+    # Si es False, la app puede iniciar sin Redis (modo degradado)
+    REDIS_REQUIRED: bool = True
     
     # ==========================================
     # WHATSAPP (API Oficial de Meta)

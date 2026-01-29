@@ -85,7 +85,12 @@ class MediaService:
                 )
             )
             
+            if response.text is None:
+                logger.warning("Gemini devolvió transcripción vacía (audio corto/silencio o bloqueo)")
+                return "[No se pudo transcribir el audio. ¿Podrías repetirlo o escribir tu mensaje?]"
             transcription = response.text.strip()
+            if not transcription:
+                return "[No se pudo transcribir el audio. ¿Podrías repetirlo o escribir tu mensaje?]"
             logger.debug("Audio transcrito")
             return transcription
             
@@ -141,6 +146,9 @@ class MediaService:
                 )
             )
             
+            if response.text is None:
+                logger.warning(f"Gemini devolvió análisis vacío para documento: {filename}")
+                return f"[No se pudo analizar el documento: {filename}]"
             analysis = response.text.strip()
             logger.debug(f"Documento procesado: {filename}")
             return f"[Contenido del documento {filename}]:\n{analysis}"
