@@ -1,6 +1,6 @@
 """
 Funciones reutilizables para tareas programadas (recordatorios, confirmaciones).
-Estas funciones pueden ser usadas tanto por endpoints HTTP como por el scheduler automático.
+Los recordatorios se envían solo por correo para evitar spam en WhatsApp.
 """
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_
@@ -9,15 +9,15 @@ import pytz
 
 from app.core.database import AsyncSessionLocal
 from app.models.tables import Client, Customer, Appointment
-from app.services.whatsapp import whatsapp_service
-from app.core.redis import ConversationMemory
+from app.services.email_service import email_service
 
 logger = logging.getLogger(__name__)
 
 
 async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
     """
-    Envía recordatorios de citas próximas.
+    Envía recordatorios de citas próximas por correo electrónico.
+    No se envían por WhatsApp para evitar que Meta considere spam y bloquee la cuenta.
     
     Args:
         hours_before: Horas de anticipación (default: 24)
@@ -34,7 +34,6 @@ async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
         errors = []
         
         async with AsyncSessionLocal() as session:
-            # Buscar citas en la ventana de tiempo
             result = await session.execute(
                 select(Appointment, Customer, Client)
                 .join(Customer, Appointment.customer_id == Customer.id)
@@ -53,44 +52,42 @@ async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
             
             for appointment, customer, client in appointments:
                 try:
-                    # Formatear fecha/hora
+                    customer_email = (customer.data or {}).get("email") if customer.data else None
+                    if not customer_email:
+                        logger.debug(f"Sin email para recordatorio: {customer.phone_number}, se omite")
+                        continue
+                    
                     tz = pytz.timezone(client.tools_config.get('timezone', 'America/Santo_Domingo'))
                     local_time = appointment.start_time.astimezone(tz)
                     
-                    # Crear mensaje de recordatorio
-                    message = (
-                        f"📅 *Recordatorio de Cita*\n\n"
-                        f"Hola {customer.full_name or 'paciente'},\n\n"
-                        f"Te recordamos que tienes una cita programada:\n\n"
-                        f"🏥 *{client.business_name}*\n"
-                        f"📆 Fecha: {local_time.strftime('%d de %B de %Y')}\n"
-                        f"🕐 Hora: {local_time.strftime('%H:%M')}\n"
+                    notes_parts = (appointment.notes or "").split('\n')
+                    servicio = notes_parts[0] if notes_parts else "Cita"
+                    profesional_nombre = None
+                    for prof in client.tools_config.get("professionals", []):
+                        if prof.get("name") in (appointment.notes or ""):
+                            profesional_nombre = prof.get("name")
+                            break
+                    
+                    appointment_details = {
+                        "servicio": servicio,
+                        "profesional": profesional_nombre,
+                    }
+                    
+                    ok = await email_service.send_reminder_email(
+                        to_email=customer_email,
+                        business_name=client.business_name,
+                        business_type=client.tools_config.get("business_type", "salon"),
+                        customer_name=customer.full_name or "Cliente",
+                        appointment_date=local_time,
+                        appointment_details=appointment_details,
+                        hours_before=hours_before,
                     )
-                    
-                    if appointment.notes:
-                        message += f"📋 Motivo: {appointment.notes}\n"
-                    
-                    message += (
-                        f"\n¿Confirmas tu asistencia?\n"
-                        f"Responde *CONFIRMAR* o *CANCELAR*"
-                    )
-                    
-                    # Enviar recordatorio
-                    await whatsapp_service.send_text_message(
-                        to=customer.phone_number,
-                        message=message,
-                        client_id=client.id
-                    )
-                    
-                    # Guardar el mensaje en Redis para mantener contexto
-                    memory = ConversationMemory(client.id, customer.phone_number)
-                    await memory.add_message("assistant", message)
-                    
-                    sent_count += 1
-                    logger.debug(f"Recordatorio enviado a {customer.phone_number}")
+                    if ok:
+                        sent_count += 1
+                        logger.debug(f"Recordatorio por email enviado a {customer_email}")
                     
                 except Exception as e:
-                    error_msg = f"Error enviando a {customer.phone_number}: {str(e)}"
+                    error_msg = f"Error enviando recordatorio a {customer.phone_number}: {str(e)}"
                     errors.append(error_msg)
                     logger.error(error_msg, exc_info=True)
         
@@ -116,8 +113,8 @@ async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
 
 async def send_confirmation_requests_task(hours_before: int = 48) -> dict:
     """
-    Envía solicitudes de confirmación para citas próximas.
-    Similar a recordatorios pero con más anticipación.
+    Envía solicitudes de confirmación por correo (48h antes).
+    No se usa WhatsApp para evitar spam; solo email.
     
     Args:
         hours_before: Horas de anticipación (default: 48)
@@ -150,39 +147,39 @@ async def send_confirmation_requests_task(hours_before: int = 48) -> dict:
             
             for appointment, customer, client in result.all():
                 try:
+                    customer_email = (customer.data or {}).get("email") if customer.data else None
+                    if not customer_email:
+                        logger.debug(f"Sin email para confirmación: {customer.phone_number}, se omite")
+                        continue
+                    
                     tz = pytz.timezone(client.tools_config.get('timezone', 'America/Santo_Domingo'))
                     local_time = appointment.start_time.astimezone(tz)
                     
-                    message = (
-                        f"👋 *Confirmación de Cita*\n\n"
-                        f"Hola {customer.full_name or 'paciente'},\n\n"
-                        f"Queremos confirmar tu cita en *{client.business_name}*:\n\n"
-                        f"📆 {local_time.strftime('%A %d de %B')}\n"
-                        f"🕐 {local_time.strftime('%H:%M')}\n"
+                    notes_parts = (appointment.notes or "").split('\n')
+                    servicio = notes_parts[0] if notes_parts else "Cita"
+                    profesional_nombre = None
+                    for prof in client.tools_config.get("professionals", []):
+                        if prof.get("name") in (appointment.notes or ""):
+                            profesional_nombre = prof.get("name")
+                            break
+                    
+                    appointment_details = {
+                        "servicio": servicio,
+                        "profesional": profesional_nombre,
+                    }
+                    
+                    ok = await email_service.send_reminder_email(
+                        to_email=customer_email,
+                        business_name=client.business_name,
+                        business_type=client.tools_config.get("business_type", "salon"),
+                        customer_name=customer.full_name or "Cliente",
+                        appointment_date=local_time,
+                        appointment_details=appointment_details,
+                        hours_before=hours_before,
                     )
-                    
-                    if appointment.notes:
-                        message += f"📋 {appointment.notes}\n"
-                    
-                    message += (
-                        f"\n¿Podrás asistir?\n"
-                        f"• Responde *SÍ* para confirmar\n"
-                        f"• Responde *NO* para cancelar\n"
-                        f"• Responde *CAMBIAR* para reagendar"
-                    )
-                    
-                    await whatsapp_service.send_text_message(
-                        to=customer.phone_number,
-                        message=message,
-                        client_id=client.id
-                    )
-                    
-                    # Guardar el mensaje en Redis para mantener contexto
-                    memory = ConversationMemory(client.id, customer.phone_number)
-                    await memory.add_message("assistant", message)
-                    
-                    sent_count += 1
-                    logger.debug(f"Confirmación enviada a {customer.phone_number}")
+                    if ok:
+                        sent_count += 1
+                        logger.debug(f"Confirmación por email enviada a {customer_email}")
                     
                 except Exception as e:
                     error_msg = f"Error enviando confirmación a {customer.phone_number}: {str(e)}"

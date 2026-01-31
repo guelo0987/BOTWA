@@ -121,6 +121,89 @@ class EmailService:
             logger.error(f"Error enviando email: {e}", exc_info=True)
             return False
     
+    async def send_reminder_email(
+        self,
+        to_email: str,
+        business_name: str,
+        business_type: str,
+        customer_name: str,
+        appointment_date: datetime,
+        appointment_details: dict,
+        hours_before: int = 24,
+    ) -> bool:
+        """
+        Envía email de recordatorio de cita (ej. 24h o 48h antes).
+        
+        Args:
+            to_email: Email del cliente
+            business_name: Nombre del negocio
+            business_type: salon, clinic, restaurant, store
+            customer_name: Nombre del cliente
+            appointment_date: Fecha y hora de la cita
+            appointment_details: servicio, profesional, etc.
+            hours_before: Anticipación del recordatorio (24 o 48)
+        
+        Returns:
+            True si se envió correctamente
+        """
+        if not self.enabled:
+            logger.info("Email disabled - skipping reminder")
+            return False
+        
+        try:
+            dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+            meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+                     'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+            dia_semana = dias[appointment_date.weekday()]
+            dia = appointment_date.day
+            mes = meses[appointment_date.month - 1]
+            año = appointment_date.year
+            hora = appointment_date.strftime("%I:%M %p")
+            fecha_formateada = f"{dia_semana} {dia} de {mes} de {año} a las {hora}"
+            
+            subject = f"Recordatorio de cita - {business_name}"
+            if hours_before >= 48:
+                subject = f"Confirmación de cita - {business_name}"
+            
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"></head>
+            <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <div style="background: #f0f4f8; padding: 20px; border-radius: 8px;">
+                        <h2 style="margin-top: 0;">Recordatorio de cita</h2>
+                        <p>Hola <strong>{customer_name}</strong>,</p>
+                        <p>Te recordamos que tienes una cita programada en <strong>{business_name}</strong>:</p>
+                        <p><strong>Fecha y hora:</strong> {fecha_formateada}</p>
+                        <p><strong>Servicio:</strong> {appointment_details.get('servicio', 'Cita')}</p>
+                        {f'<p><strong>Profesional:</strong> {appointment_details.get("profesional", "")}</p>' if appointment_details.get('profesional') else ''}
+                        <p>Si necesitas cancelar o modificar, contáctanos por WhatsApp.</p>
+                        <p>¡Te esperamos!</p>
+                    </div>
+                    <p style="color: #888; font-size: 12px;">{business_name}</p>
+                </div>
+            </body>
+            </html>
+            """
+            
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"{business_name} <{self.from_email}>"
+            msg['To'] = to_email
+            msg.attach(MIMEText(html, 'html', 'utf-8'))
+            
+            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.smtp_user, self.smtp_password)
+                server.send_message(msg)
+            
+            logger.debug(f"Email de recordatorio enviado a {to_email}")
+            return True
+        except Exception as e:
+            logger.error(f"Error enviando email de recordatorio: {e}", exc_info=True)
+            return False
+    
     def _generate_email_content(
         self,
         business_type: str,

@@ -26,7 +26,7 @@ router = APIRouter()
     "/send-reminders",
     status_code=status.HTTP_200_OK,
     summary="Enviar recordatorios de citas",
-    description="Envía recordatorios de WhatsApp para citas que están próximas.",
+    description="Envía recordatorios por correo electrónico para citas próximas (no por WhatsApp para evitar spam).",
     responses={
         200: {
             "description": "Recordatorios enviados correctamente",
@@ -53,10 +53,10 @@ async def send_appointment_reminders(
     x_api_key: str | None = Header(None, alias="X-API-Key", description="API key para autenticación")
 ) -> dict:
     """
-    Envía recordatorios de citas próximas.
+    Envía recordatorios de citas próximas por correo electrónico.
     
-    Busca citas que están dentro de la ventana de tiempo especificada
-    y envía recordatorios por WhatsApp.
+    Busca citas dentro de la ventana de tiempo y envía recordatorios por email
+    (no por WhatsApp para evitar que Meta considere spam).
     
     **Nota:** Esta tarea también se ejecuta automáticamente cada hora.
     
@@ -99,7 +99,7 @@ async def send_appointment_reminders(
     "/send-confirmations",
     status_code=status.HTTP_200_OK,
     summary="Enviar solicitudes de confirmación",
-    description="Envía solicitudes de confirmación para citas que están próximas.",
+    description="Envía solicitudes de confirmación por correo para citas próximas (no por WhatsApp).",
     responses={
         200: {
             "description": "Confirmaciones enviadas correctamente",
@@ -122,10 +122,10 @@ async def send_confirmation_requests(
     x_api_key: str | None = Header(None, alias="X-API-Key", description="API key para autenticación")
 ) -> dict:
     """
-    Envía solicitudes de confirmación para citas próximas.
+    Envía solicitudes de confirmación por correo para citas próximas.
     
     Similar a recordatorios pero con más anticipación (por defecto 48 horas).
-    Permite a los clientes confirmar, cancelar o reagendar sus citas.
+    Se envía solo por email (no por WhatsApp).
     
     **Nota:** Esta tarea también se ejecuta automáticamente cada 6 horas.
     """

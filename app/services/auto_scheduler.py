@@ -31,9 +31,9 @@ async def start_scheduler():
     """
     Inicia el scheduler automático con las tareas programadas.
     
-    Tareas configuradas:
-    - Recordatorios: Cada hora, busca citas que están a 24 horas
-    - Confirmaciones: Cada 6 horas, busca citas que están a 48 horas
+    Tareas configuradas (solo por correo, no WhatsApp):
+    - Recordatorios: Cada hora, email 24h antes de la cita
+    - Confirmaciones: Cada 6 horas, email 48h antes de la cita
     """
     global scheduler
     scheduler = get_scheduler()
@@ -64,8 +64,8 @@ async def start_scheduler():
     
     scheduler.start()
     logger.info("Scheduler automático iniciado")
-    logger.info("   - Recordatorios: cada hora (24h antes de la cita)")
-    logger.info("   - Confirmaciones: cada 6 horas (48h antes de la cita)")
+    logger.info("   - Recordatorios por email: cada hora (24h antes)")
+    logger.info("   - Confirmaciones por email: cada 6 horas (48h antes)")
 
 
 async def stop_scheduler():

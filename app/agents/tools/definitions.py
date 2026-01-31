@@ -26,10 +26,10 @@ TOOL_DEFINITIONS = [
             types.FunctionDeclaration(
                 name="ver_servicios",
                 description="""Muestra servicios o productos disponibles según el tipo de negocio.
-                - Para SALONES: muestra servicios (corte, tinte, etc.) con precios
-                - Para TIENDAS: muestra catálogo de productos (usa esto para responder preguntas sobre productos del catálogo)
-                - Para RESTAURANTES: muestra menú si está disponible
-                Usa cuando el usuario pregunte: qué servicios hay, qué productos tienen, ver catálogo, cuánto cuesta, buscar producto, etc.""",
+                - Negocios con SERVICIOS Y CITAS (detailing, taller, spa, centro de servicios, etc.): muestra lista de servicios con precios y duración
+                - TIENDA/CATÁLOGO (dealer, tienda): muestra catálogo de productos/modelos con precios
+                - Restaurante: menú si está configurado
+                Usa cuando pregunten: qué servicios hay, precios, catálogo, modelos disponibles, cuánto cuesta, etc.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
@@ -100,7 +100,7 @@ TOOL_DEFINITIONS = [
                         ),
                         "profesional_id": types.Schema(
                             type=types.Type.STRING,
-                            description="ID o nombre del profesional (clínicas y salones). Si es salón y no especifica profesional, usar null o omitir este campo para usar calendario general."
+                            description="ID o nombre del profesional/atendente (clínicas y negocios con servicios). Si no especifica profesional, usar null para calendario general."
                         ),
                         "direccion": types.Schema(
                             type=types.Type.STRING,
@@ -315,7 +315,7 @@ class ToolExecutor:
         categoria = args.get("categoria", "").lower()
         currency = self.config.get("currency", "$")
         
-        # CASO: Salón con servicios
+        # CASO: Negocio con servicios (detailing, taller, spa, centro de servicios, etc.)
         if "services" in self.config:
             services = self.config["services"]
             if categoria:
@@ -324,9 +324,10 @@ class ToolExecutor:
             if not services:
                 return "No encontré servicios con ese nombre."
             
-            texto = "💅 *Servicios disponibles:*\n\n"
+            texto = "📋 *Servicios disponibles:*\n\n"
             for s in services:
-                duracion = f"{s['duration']} min" if s.get('duration') else ""
+                mins = s.get('duration') or s.get('duration_minutes')
+                duracion = f"{mins} min" if mins is not None else ""
                 texto += f"• *{s['name']}*\n  💰 {currency}{s['price']:,} | ⏱️ {duracion}\n\n"
             return texto
         
@@ -1109,30 +1110,37 @@ class ToolExecutor:
                     else:
                         return f"❌ Lo siento, no hay horarios disponibles para el {fecha_nueva.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
                 
-                # Actualizar en Google Calendar
+                # Quitar la cita anterior del calendario y crear la nueva (evita duplicados)
                 from googleapiclient.errors import HttpError
                 try:
-                    event = calendar_service.service.events().get(
-                        calendarId=calendar_id,
-                        eventId=appointment.google_event_id
-                    ).execute()
+                    old_event_id = appointment.google_event_id
+                    # 1) Borrar el evento anterior del calendario
+                    deleted = await calendar_service.cancel_appointment(
+                        calendar_id=calendar_id,
+                        event_id=old_event_id
+                    )
+                    if not deleted:
+                        logger.warning(f"No se pudo borrar evento antiguo {old_event_id}, puede quedar duplicado")
                     
-                    event['start'] = {
-                        'dateTime': fecha_nueva.isoformat(),
-                        'timeZone': tz.zone
-                    }
-                    event['end'] = {
-                        'dateTime': fecha_nueva_fin.isoformat(),
-                        'timeZone': tz.zone
-                    }
+                    # 2) Crear nuevo evento en la nueva fecha/hora
+                    title = f"Cita: {self.customer.full_name or 'Cliente'}"
+                    if appointment.notes:
+                        notes_parts = appointment.notes.split('\n')
+                        title = notes_parts[0] if notes_parts else title
+                    new_event = await calendar_service.create_appointment(
+                        calendar_id=calendar_id,
+                        title=title,
+                        start_time=fecha_nueva,
+                        end_time=fecha_nueva_fin,
+                        description=appointment.notes or "",
+                        attendee_phone=self.customer.phone_number or "",
+                        config=self.config,
+                    )
+                    if not new_event or not new_event.get("id"):
+                        return "No pude crear la nueva cita en el calendario. Intenta de nuevo."
                     
-                    updated_event = calendar_service.service.events().update(
-                        calendarId=calendar_id,
-                        eventId=appointment.google_event_id,
-                        body=event
-                    ).execute()
-                    
-                    # Actualizar en BD
+                    # 3) Actualizar en BD con el nuevo event_id y fechas
+                    appointment.google_event_id = new_event["id"]
                     appointment.start_time = fecha_nueva
                     appointment.end_time = fecha_nueva_fin
                     await session.commit()
@@ -1142,6 +1150,13 @@ class ToolExecutor:
                         from app.services.client_service import client_service
                         await client_service.update_customer_data(self.customer.id, {"email": email})
                     
+                    # Extraer profesional para el mensaje de confirmación
+                    profesional_nombre = None
+                    for prof in self.config.get("professionals", []):
+                        if prof.get("name") in (appointment.notes or ""):
+                            profesional_nombre = prof.get("name")
+                            break
+                    
                     # Enviar email de confirmación
                     customer_email = email or (self.customer.data.get("email") if self.customer.data else None)
                     email_enviado = False
@@ -1149,15 +1164,8 @@ class ToolExecutor:
                         try:
                             from app.services.email_service import email_service
                             
-                            # Extraer detalles de la cita
                             notes_parts = appointment.notes.split('\n') if appointment.notes else []
                             servicio = notes_parts[0] if notes_parts else "Cita"
-                            profesional_nombre = None
-                            for prof in self.config.get("professionals", []):
-                                if prof.get("name") in appointment.notes:
-                                    profesional_nombre = prof.get("name")
-                                    break
-                            
                             appointment_details = {
                                 "servicio": servicio,
                                 "profesional": profesional_nombre,
@@ -1187,7 +1195,7 @@ class ToolExecutor:
                         return f"✅ *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_str}{email_msg}\n\n¡Te esperamos!"
                 
                 except HttpError as e:
-                    logger.error(f"Error actualizando en Google Calendar: {e}")
+                    logger.error(f"Error en calendario al modificar cita: {e}")
                     return "No pude modificar la cita en el calendario. Intenta de nuevo."
             
         except Exception as e:
