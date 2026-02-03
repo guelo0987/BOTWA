@@ -33,7 +33,7 @@ async def init_redis() -> redis.Redis:
     except Exception:
         # Cerrar el cliente para no dejar conexiones colgadas
         try:
-            await redis_client.close()
+            await redis_client.aclose()
         except Exception:
             pass
         redis_client = None
@@ -54,7 +54,7 @@ async def close_redis():
     """
     global redis_client
     if redis_client:
-        await redis_client.close()
+        await redis_client.aclose()
 
 
 def get_redis() -> redis.Redis:

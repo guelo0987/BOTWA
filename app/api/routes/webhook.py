@@ -275,5 +275,5 @@ async def handle_message(msg: ProcessedMessage):
                 to=msg.phone_number,
                 message="Lo siento, ocurrió un error. Por favor intenta de nuevo en unos momentos."
             )
-        except:
-            pass
+        except Exception as send_err:
+            logger.warning(f"No se pudo enviar mensaje de error al usuario: {send_err}")

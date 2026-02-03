@@ -35,7 +35,7 @@ async def main():
         print(f"Error al limpiar Redis: {e}")
         sys.exit(1)
     finally:
-        await client.close()
+        await client.aclose()
 
 
 if __name__ == "__main__":

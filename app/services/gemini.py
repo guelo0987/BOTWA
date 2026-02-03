@@ -307,24 +307,40 @@ CATÁLOGO:
 - Categorías: {', '.join(cat_names)}
 - Preguntas por productos/modelos → usa ver_servicios (puedes filtrar por categoría)
 """
+            # Si tiene calendar_id, el negocio ofrece entrega a domicilio (pago contra entrega); si no, solo catálogo y visita
+            delivery_info = ""
+            if config.get('calendar_id'):
+                delivery_info = """
+ENTREGA A DOMICILIO (PAGO CONTRA ENTREGA):
+- Este negocio SÍ ofrece entrega a domicilio con pago contra entrega.
+- Cuando muestres el catálogo o pregunten por productos, puedes mencionar brevemente: "Todos nuestros productos están disponibles con entrega a domicilio (pago contra entrega). ¿Te gustaría ver opciones o agendar una entrega?"
+- Si preguntan "¿hacen envíos?", "¿entregan?", "¿pago contra entrega?": responde que sí y ofrece agendar la entrega (nombre, correo, producto, dirección, fecha/hora).
+"""
+            else:
+                delivery_info = """
+ENTREGA A DOMICILIO:
+- Este negocio NO tiene entregas a domicilio configuradas. Solo ofrece catálogo y visita al local.
+- No ofrezcas agendar entrega. Si preguntan por envíos, indica que pueden pasar al local según horarios de atención.
+"""
             
             base_system += f"""
 ═══════════════════════════════════════════════════
 INSTRUCCIONES - TIENDA / CATÁLOGO (SIN CITAS OBLIGATORIAS)
 ═══════════════════════════════════════════════════
-(Tienda, concesionario de autos, dealer, etc.: mostrar catálogo; visitas sin cita o entregas opcionales)
+(Tienda, concesionario, colchonería, etc.: mostrar catálogo; visitas sin cita; entregas opcionales con pago contra entrega)
 
 TU PRINCIPAL FUNCIÓN:
-- Responder preguntas sobre productos/modelos del catálogo (ver_servicios)
-- Si el negocio es de visita física (ej. concesionario, tienda): el cliente puede preguntar por modelos y decir que va a pasar. Responde con horarios de atención y dilaciones como "Puedes pasar cuando quieras", "Pásate ahora mismo", "Te esperamos" según corresponda. NO obligues a agendar cita si solo quieren información o ir a ver.
-- Agendar entregas a domicilio SOLO cuando el cliente quiera comprar y llevarlo (pago contra entrega)
+- Responder preguntas sobre productos del catálogo (ver_servicios). Los productos están disponibles; si el negocio tiene entregas, también a domicilio con pago contra entrega.
+- Si el negocio es de visita física: el cliente puede decir que va a pasar. Responde con horarios y "Puedes pasar cuando quieras", "Te esperamos". NO obligues a agendar solo para informarse o ir a ver.
+- Si el negocio ofrece entrega a domicilio: menciónalo al mostrar catálogo y ofrece agendar entrega cuando quieran comprar (pago contra entrega).
+{delivery_info}
 
-CONSULTA DE PRODUCTOS / MODELOS:
-1. Cliente pregunta por producto, modelo, categoría
+CONSULTA DE PRODUCTOS:
+1. Cliente pregunta por producto, categoría, precios
 2. Usa ver_servicios para mostrar opciones, precios, descripciones
-3. Si dice que va a pasar / quiere ir a ver: confirma horarios y que puede pasar sin cita
+3. Si tiene entregas: opcionalmente añade que están disponibles con entrega a domicilio (pago contra entrega)
 
-FLUJO DE COMPRA/ENTREGA (solo si aplica y el cliente quiere entrega):
+FLUJO DE COMPRA/ENTREGA (cuando el negocio tiene entregas y el cliente quiere entrega):
 1. Cliente muestra interés en comprar y quiere entrega a domicilio
 2. Recopila: nombre, correo, producto(s), dirección, fecha/hora entrega
 3. Confirma: "Te enviaremos la confirmación a [correo]. Pago contra entrega."
@@ -337,6 +353,20 @@ REGLAS:
 - Catálogo con ver_servicios. Visitas sin cita: horarios + "puedes pasar cuando quieras" si aplica
 - Financiamiento o pagos complejos → escala a humano. Emojis moderados (📦 🚚 ✅)
 {catalog_info}
+"""
+
+        elif business_type == 'general':
+            base_system += """
+═══════════════════════════════════════════════════
+INSTRUCCIONES - NEGOCIO GENÉRICO (CITAS BÁSICAS)
+═══════════════════════════════════════════════════
+Este negocio solo ofrece citas básicas. No hay listado de servicios ni profesionales.
+
+FLUJO:
+1. Recopila: nombre completo, correo electrónico (OBLIGATORIO), fecha preferida, hora preferida
+2. Usa buscar_disponibilidad para la fecha y luego crear_cita con los datos
+3. No preguntes por "servicio" ni "profesional" - no aplican
+4. Confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
 """
 
         elif business_type == 'restaurant':
@@ -569,16 +599,17 @@ PROMPT PERSONALIZADO DEL NEGOCIO:
         
         # Verificar si hay contenido
         if candidate.content and candidate.content.parts:
-            text_response = None
+            text_parts = []
             function_call_part = None
             
-            # Primero recolectar texto y function calls
+            # Recolectar todo el texto de las parts (a veces hay varias) y function calls
             for part in candidate.content.parts:
-                if hasattr(part, 'text') and part.text:
-                    text_response = part.text
-                
+                if hasattr(part, 'text') and part.text and part.text.strip():
+                    text_parts.append(part.text.strip())
                 if hasattr(part, 'function_call') and part.function_call:
                     function_call_part = part.function_call
+            
+            text_response = " ".join(text_parts) if text_parts else None
             
             # PRIORIZAR function calls sobre texto
             if function_call_part:
@@ -634,9 +665,22 @@ PROMPT PERSONALIZADO DEL NEGOCIO:
             if text_response:
                 return text_response
         
-        # Si no hay partes, intentar extraer texto directamente
-        if hasattr(response, 'text') and response.text:
-            return response.text
+        # Si no hay partes, intentar extraer texto directamente del response
+        if hasattr(response, 'text') and response.text and response.text.strip():
+            return response.text.strip()
+        
+        # Último recurso: intentar de candidate.content.parts por si no entró arriba
+        if response.candidates:
+            c0 = response.candidates[0]
+            if c0.content and c0.content.parts:
+                texts = []
+                for p in c0.content.parts:
+                    if getattr(p, 'text', None) and str(p.text).strip():
+                        texts.append(str(p.text).strip())
+                if texts:
+                    return " ".join(texts)
+            if getattr(c0, 'finish_reason', None):
+                logger.debug(f"Gemini finish_reason: {c0.finish_reason}")
         
         logger.warning("No content found in response")
         return "Lo siento, no pude procesar tu solicitud. ¿Podrías intentarlo de nuevo?"

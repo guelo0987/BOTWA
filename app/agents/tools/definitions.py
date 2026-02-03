@@ -5,7 +5,6 @@ Soporta múltiples tipos de negocio: salon, clinic, store, restaurant
 
 from google.genai import types
 from datetime import datetime, timedelta
-from typing import Optional
 import logging
 import pytz
 
@@ -316,7 +315,9 @@ class ToolExecutor:
         currency = self.config.get("currency", "$")
         
         # CASO: Negocio con servicios (detailing, taller, spa, centro de servicios, etc.)
-        if "services" in self.config:
+        # Solo usar este bloque si hay servicios definidos; si services es [] (ej. tienda con productos),
+        # dejar que se use el catálogo más abajo.
+        if "services" in self.config and self.config["services"]:
             services = self.config["services"]
             if categoria:
                 services = [s for s in services if categoria in s["name"].lower()]
@@ -331,7 +332,7 @@ class ToolExecutor:
                 texto += f"• *{s['name']}*\n  💰 {currency}{s['price']:,} | ⏱️ {duracion}\n\n"
             return texto
         
-        # CASO: Tienda con catálogo
+        # CASO: Tienda con catálogo (productos; puede tener services: [] en el JSON)
         if "catalog" in self.config:
             catalog = self.config["catalog"]
             categories = catalog.get("categories", [])
@@ -340,7 +341,15 @@ class ToolExecutor:
                 categories = [c for c in categories if categoria in c["name"].lower()]
             
             if not categories:
-                return "No encontré esa categoría. Categorías disponibles: " + ", ".join([c["name"] for c in catalog.get("categories", [])])
+                todas = catalog.get("categories", [])
+                if not todas:
+                    logger.warning(
+                        "ver_servicios: cliente %s tiene 'catalog' pero categories está vacío. "
+                        "Configura catalog.categories con productos en el panel de administración.",
+                        self.client.id,
+                    )
+                    return "Aún no tenemos el catálogo de productos cargado. ¿Te gustaría que te cuente horarios de atención o que un asesor te contacte?"
+                return "No encontré esa categoría. Categorías disponibles: " + ", ".join([c["name"] for c in todas])
             
             texto = "🛒 *Catálogo de productos:*\n\n"
             for cat in categories:
@@ -361,7 +370,14 @@ class ToolExecutor:
         if "menu_url" in self.config:
             return f"📋 Puedes ver nuestro menú completo aquí: {self.config['menu_url']}"
         
-        return "No hay servicios o productos configurados para este negocio."
+        logger.warning(
+            "ver_servicios: cliente %s (%s) no tiene catalog, services ni menu_url en tools_config. "
+            "Keys presentes: %s. Configura el catálogo/servicios en el panel de administración.",
+            self.client.id,
+            getattr(self.client, "business_name", "?"),
+            list(self.config.keys()),
+        )
+        return "Aún no tenemos el catálogo de productos cargado. ¿Te gustaría que te cuente horarios de atención o que un asesor te contacte?"
     
     # ==========================================
     # VER PROFESIONALES (CLÍNICAS)
@@ -518,12 +534,6 @@ class ToolExecutor:
             if self.business_type == "clinic" and self.config.get("professionals") and len(self.config["professionals"]) > 1:
                 if not profesional_id:
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
-                    return f"Para agendar tu cita, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
-            
-            # VALIDACIÓN: Para clínicas con múltiples profesionales, profesional_id es obligatorio
-            if self.business_type == "clinic" and self.config.get("professionals") and len(self.config["professionals"]) > 1:
-                if not profesional_id:
-                    profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"Para agendar tu cita médica, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
             
             tz = pytz.timezone(self.config.get('timezone', 'America/Santo_Domingo'))
@@ -538,6 +548,9 @@ class ToolExecutor:
             # ==========================================
             working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
             working_days = self.config.get("working_days", [1, 2, 3, 4, 5])
+            # Tienda con delivery: validar y usar horario de entregas
+            if self.business_type == "store":
+                working_hours = self.config.get("delivery_hours", working_hours)
             
             # Validar día de la semana
             dia_semana = fecha.isoweekday()
@@ -1069,9 +1082,11 @@ class ToolExecutor:
                 # ==========================================
                 from app.services.calendar import calendar_service
                 
-                # Obtener working_hours del profesional si aplica
+                # Obtener working_hours del profesional si aplica; tienda usa delivery_hours
                 working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
-                if self.config.get("professionals") and appointment.notes:
+                if self.business_type == "store":
+                    working_hours = self.config.get("delivery_hours", working_hours)
+                elif self.config.get("professionals") and appointment.notes:
                     for prof in self.config["professionals"]:
                         if prof.get("name") in appointment.notes:
                             working_hours = prof.get("business_hours", working_hours)
