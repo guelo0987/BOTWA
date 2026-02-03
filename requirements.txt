@@ -33,6 +33,11 @@ google-auth-oauthlib==1.2.1
 google-api-python-client==2.149.0
 
 # ==========================================
+# SUPABASE S3 (Storage - catálogo PDF, API S3-compatible)
+# ==========================================
+boto3==1.35.0
+
+# ==========================================
 # UTILIDADES
 # ==========================================
 python-multipart==0.0.9

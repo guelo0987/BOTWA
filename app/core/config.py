@@ -94,6 +94,19 @@ class Settings(BaseSettings):
     EMAIL_FROM: str | None = None
     
     # ==========================================
+    # SUPABASE S3 (Catálogo en PDF - Storage S3-compatible)
+    # ==========================================
+    SUPABASE_S3_ACCESS_KEY_ID: str | None = None
+    SUPABASE_S3_SECRET_ACCESS_KEY: str | None = None
+    # Endpoint S3 de Supabase (ej. https://xxx.storage.supabase.co/storage/v1/s3)
+    SUPABASE_S3_ENDPOINT: str | None = None
+    SUPABASE_S3_REGION: str = "us-east-2"
+    # Nombre del bucket donde se suben los PDFs de catálogo (panel admin)
+    SUPABASE_BUCKET_CATALOGS: str = "catalogs"
+    # TTL en segundos del texto extraído del PDF en Redis (7 días)
+    CATALOG_PDF_CACHE_TTL_SECONDS: int = 604800
+
+    # ==========================================
     # CONFIGURACIÓN DEL BOT
     # ==========================================
     # Tiempo de expiración de sesión en Redis (segundos)

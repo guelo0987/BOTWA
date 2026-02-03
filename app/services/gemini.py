@@ -298,7 +298,12 @@ REGLAS IMPORTANTES:
         elif business_type == 'store':
             # Tienda / concesionario / dealer: catálogo, sin citas obligatorias. Puede ser solo info + "pásate cuando quieras"
             catalog_info = ""
-            if config.get('catalog'):
+            if config.get('catalog_source') == 'pdf':
+                catalog_info = """
+CATÁLOGO (PDF):
+- El catálogo del negocio está en un documento PDF. Cuando pregunten por productos, precios, qué tienen, cuánto cuesta X, etc., usa ver_servicios y pasa en el parámetro "pregunta" exactamente lo que el usuario preguntó (ej. "¿Qué colchones tienen?", "precios de almohadas", "cuánto cuesta el modelo Y"). La IA responderá basándose en el PDF.
+"""
+            elif config.get('catalog'):
                 categories = config['catalog'].get('categories', [])
                 if categories:
                     cat_names = [c['name'] for c in categories]
@@ -710,7 +715,90 @@ PROMPT PERSONALIZADO DEL NEGOCIO:
         except Exception as e:
             logger.error(f"Error en chat_simple: {e}", exc_info=True)
             return "Error procesando el mensaje."
-    
+
+    async def answer_from_context(self, context: str, question: str) -> str:
+        """
+        Responde una pregunta del usuario basándose solo en el contexto (ej. texto
+        extraído del catálogo PDF). Para clientes con catalog_source=pdf.
+        """
+        if not context or not context.strip():
+            return "No tengo el catálogo disponible en este momento. ¿Quieres que te cuente horarios o que un asesor te contacte?"
+        if not question or not question.strip():
+            question = "Lista todos los productos, servicios, precios y descripciones del catálogo de forma clara y útil para el cliente."
+        try:
+            system = (
+                "Eres un asistente que responde ÚNICAMENTE basándote en el contexto (catálogo del negocio) que te proporciono. "
+                "Responde en español, de forma breve y útil para WhatsApp. "
+                "Si la información no está en el contexto, dilo amablemente y ofrece alternativas (horarios, contacto). "
+                "Para listas de productos o precios usa *negrita* para nombres y montos. "
+                "No inventes datos que no aparezcan en el contexto."
+            )
+            user_content = f"Contexto (catálogo del negocio):\n\n{context[:300000]}\n\n---\nPregunta del cliente: {question}"
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=user_content)]
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    temperature=0.3,
+                    max_output_tokens=1024,
+                )
+            )
+            if not response.text or not response.text.strip():
+                return "No pude generar una respuesta del catálogo. ¿Quieres que te cuente horarios o que un asesor te contacte?"
+            return self._clean_response(response.text.strip())
+        except Exception as e:
+            logger.error(f"Error en answer_from_context: {e}", exc_info=True)
+            return "Tuve un problema al consultar el catálogo. ¿Podrías intentar de nuevo o pedir horarios/contacto?"
+
+    async def extract_text_from_pdf(self, pdf_bytes: bytes) -> str | None:
+        """
+        Extrae todo el texto de un PDF con Gemini (multimodal).
+        Sirve para PDFs nativos y para escaneados/imágenes.
+        """
+        if not pdf_bytes or len(pdf_bytes) < 100:
+            return None
+        # Limitar tamaño para evitar timeouts/costes (ej. 15 MB)
+        if len(pdf_bytes) > 15 * 1024 * 1024:
+            logger.warning("PDF demasiado grande para extracción con Gemini (>15MB)")
+            return None
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_bytes(
+                                data=pdf_bytes,
+                                mime_type="application/pdf",
+                            ),
+                            types.Part.from_text(
+                                text=(
+                                    "Extrae TODO el texto de este documento PDF de forma literal. "
+                                    "Preserva la estructura: títulos, listas, precios, nombres de productos/servicios. "
+                                    "Responde ÚNICAMENTE con el texto extraído, sin comentarios ni explicaciones."
+                                )
+                            ),
+                        ],
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=8192,
+                )
+            )
+            if not response.text or not response.text.strip():
+                return None
+            return response.text.strip()
+        except Exception as e:
+            logger.warning("Error extrayendo texto del PDF con Gemini: %s", e)
+            return None
+
     # Alias para compatibilidad
     async def chat(
         self,

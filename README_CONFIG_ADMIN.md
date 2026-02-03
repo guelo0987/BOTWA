@@ -238,11 +238,25 @@ Si además tienen entregas a domicilio (ej. tienda de colchones), añade `calend
 Eres el asistente de [Nombre del Concesionario]. Hablas de autos, modelos y precios. Si el cliente dice que va a pasar a ver, confirma horarios y dile que puede pasar cuando quiera. No obligues a agendar cita para solo ver el catálogo.
 ```
 
-### 5.4 Cambios recientes en tipo `store`
+### 5.4 Catálogo en PDF (alternativa a `catalog` escrito)
+
+Si el negocio prefiere **subir un PDF** en lugar de cargar categorías/productos a mano, el panel admin puede subir el PDF a un bucket (ej. Supabase Storage) y guardar en `tools_config`:
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `catalog_source` | string | `"pdf"` |
+| `catalog_pdf_key` | string | Ruta del archivo en el bucket (ej. `"client_123/catalogo.pdf"`). El backend descarga desde Supabase y la IA responde preguntas basándose en el PDF. |
+| `catalog_pdf_url` | string | Opcional: URL pública o firmada del PDF. Si se usa, el backend descarga por HTTP en lugar del bucket. |
+
+- El bot usa la misma herramienta `ver_servicios`; cuando el usuario pregunta por productos/precios, la IA lee el PDF (o el texto extraído en caché) y responde.
+- Requiere en el backend: `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION` y bucket (por defecto `catalogs`). Ver `.env.example`.
+
+### 5.5 Cambios recientes en tipo `store`
 
 - **Visita sin cita**: el bot puede decir “Puedes pasar cuando quieras”, “Pásate ahora mismo”, según horarios. **No** obliga a agendar para informarse o ir a ver.
 - Entregas a domicilio solo cuando el cliente quiera comprar y llevarlo; pago contra entrega.
 - Sin `calendar_id` el negocio puede ser solo catálogo + visita sin cita.
+- **Catálogo en PDF**: opción `catalog_source: "pdf"` con `catalog_pdf_key` (o `catalog_pdf_url`) para que la IA responda desde el documento.
 
 ---
 

@@ -25,16 +25,20 @@ TOOL_DEFINITIONS = [
             types.FunctionDeclaration(
                 name="ver_servicios",
                 description="""Muestra servicios o productos disponibles según el tipo de negocio.
-                - Negocios con SERVICIOS Y CITAS (detailing, taller, spa, centro de servicios, etc.): muestra lista de servicios con precios y duración
-                - TIENDA/CATÁLOGO (dealer, tienda): muestra catálogo de productos/modelos con precios
+                - Negocios con SERVICIOS Y CITAS (detailing, taller, spa, etc.): lista de servicios con precios y duración
+                - TIENDA/CATÁLOGO (dealer, tienda): catálogo de productos/modelos con precios (o consulta al PDF si catalog_source=pdf)
                 - Restaurante: menú si está configurado
-                Usa cuando pregunten: qué servicios hay, precios, catálogo, modelos disponibles, cuánto cuesta, etc.""",
+                Si el negocio tiene catálogo en PDF, pasa en 'pregunta' lo que el usuario preguntó (ej. qué tienen, precios de X, cuánto cuesta Y).""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
                         "categoria": types.Schema(
                             type=types.Type.STRING,
                             description="Categoría específica a mostrar (opcional). Ej: Colchones, Almohadas, Cortes"
+                        ),
+                        "pregunta": types.Schema(
+                            type=types.Type.STRING,
+                            description="Para catálogo en PDF: la pregunta del usuario (qué tienen, precios de X, cuánto cuesta Y, etc.). Usar cuando catalog_source=pdf."
                         ),
                     },
                 )
@@ -311,8 +315,24 @@ class ToolExecutor:
     # ==========================================
     async def _ver_servicios(self, args: dict) -> str:
         """Muestra servicios/productos según tipo de negocio."""
-        categoria = args.get("categoria", "").lower()
+        categoria = args.get("categoria", "").strip().lower()
+        pregunta = (args.get("pregunta") or "").strip()
         currency = self.config.get("currency", "$")
+        
+        # CASO: Catálogo en PDF (Supabase bucket) — consulta vía IA sobre el documento
+        if self.config.get("catalog_source") == "pdf" and (
+            self.config.get("catalog_pdf_key") or self.config.get("catalog_pdf_url")
+        ):
+            from app.services.catalog_pdf import get_catalog_text
+            from app.services.gemini import gemini_service
+            catalog_text = await get_catalog_text(self.client.id, self.config)
+            if not catalog_text:
+                logger.warning("ver_servicios PDF: no se pudo obtener texto para client %s", self.client.id)
+                return "No pude cargar el catálogo en este momento. ¿Te gustaría que te cuente horarios de atención o que un asesor te contacte?"
+            question = pregunta or categoria or "Lista todos los productos, servicios, precios y descripciones del catálogo de forma clara y útil para el cliente."
+            if categoria and not pregunta:
+                question = f"Información sobre categoría o tema: {categoria}. Responde con productos/precios relevantes del catálogo."
+            return await gemini_service.answer_from_context(catalog_text, question)
         
         # CASO: Negocio con servicios (detailing, taller, spa, centro de servicios, etc.)
         # Solo usar este bloque si hay servicios definidos; si services es [] (ej. tienda con productos),
