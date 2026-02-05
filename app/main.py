@@ -9,6 +9,7 @@ from app.core.database import init_db
 from app.core.redis import init_redis, close_redis
 from app.api.routes import webhook
 from app.api.routes import scheduler
+from app.api.routes import admin
 from app.services.auto_scheduler import start_scheduler, stop_scheduler
 
 # Configurar logging
@@ -122,6 +123,7 @@ app.add_middleware(
 # Incluir routers
 app.include_router(webhook.router, prefix="/webhook", tags=["WhatsApp"])
 app.include_router(scheduler.router, prefix="/scheduler", tags=["Scheduler"])
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 
 
 @app.get("/", tags=["Root"])

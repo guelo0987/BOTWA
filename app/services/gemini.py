@@ -122,39 +122,117 @@ Horario: {hours.get('start', '08:00')} - {hours.get('end', '18:00')}
 Días de atención: {dias_str}
 """
 
-        # Servicios (negocio con servicios + citas, clínica simple)
-        if 'services' in config:
-            currency = config.get('currency', '$')
-            services_list = []
-            for s in config['services']:
-                services_list.append(f"  - {s['name']}: {currency}{s['price']:,}")
-            base_system += f"""
+        # PRIORIZAR catálogo sobre servicios genéricos
+        # Si existe catalog con productos, mostrar esos en lugar del array "services"
+        currency = config.get('currency', '$')
+        
+        if 'catalog' in config:
+            cats = config['catalog'].get('categories', [])
+            if cats:
+                services_list = []
+                for cat in cats:
+                    for p in cat.get('products', []):
+                        precio = f"{currency}{p['price']:,}" if p.get('price') else 'Consultar'
+                        desc = f" - {p['description']}" if p.get('description') else ""
+                        services_list.append(f"  - {p['name']}: {precio}{desc}")
+                if services_list:
+                    base_system += f"""
+Servicios/Productos disponibles:
+{chr(10).join(services_list)}
+"""
+                if config.get('free_delivery_minimum'):
+                    base_system += f"Envío gratis en compras mayores a {currency}{config['free_delivery_minimum']:,}\n"
+        # Si no hay catálogo, usar servicios (pero solo si no son genéricos/placeholder)
+        elif 'services' in config:
+            services = config['services']
+            # Filtrar servicios genéricos/placeholder (precio 0 y nombre genérico)
+            real_services = [s for s in services if s.get('price', 0) > 0 or s.get('name', '').lower() not in ['servicio', 'service']]
+            if real_services:
+                services_list = []
+                for s in real_services:
+                    services_list.append(f"  - {s['name']}: {currency}{s['price']:,}")
+                base_system += f"""
 Servicios y precios:
 {chr(10).join(services_list)}
 """
 
-        # Profesionales (clínica multi-doctor)
+        # Profesionales (clínica multi-doctor o salón) - mostrar info detallada
         if 'professionals' in config:
             profs_list = []
+            dias_nombres = {1:'Lun', 2:'Mar', 3:'Mié', 4:'Jue', 5:'Vie', 6:'Sáb', 7:'Dom'}
             for p in config['professionals']:
-                profs_list.append(f"  - {p['name']} ({p.get('specialty', 'General')})")
+                # Días de trabajo del profesional
+                dias = ", ".join([dias_nombres.get(d, str(d)) for d in p.get("working_days", [])])
+                # Horario del profesional
+                hours = p.get("business_hours", {})
+                horario = f"{hours.get('start', '08:00')} - {hours.get('end', '17:00')}"
+                # Precio de consulta
+                precio = p.get("consultation_price", 0)
+                precio_str = f" | Consulta: {currency}{precio:,}" if precio else ""
+                # Duración de cita
+                duracion = p.get("slot_duration", 30)
+                
+                profs_list.append(
+                    f"  - *{p['name']}* ({p.get('specialty', 'General')}){precio_str}\n"
+                    f"    📅 Días: {dias} | 🕐 Horario: {horario} | ⏱️ {duracion} min"
+                )
             base_system += f"""
 Profesionales disponibles:
 {chr(10).join(profs_list)}
 """
 
-        # Catálogo (tienda)
-        if 'catalog' in config:
-            cats = config['catalog'].get('categories', [])
-            base_system += f"""
-Categorías de productos: {', '.join([c['name'] for c in cats])}
-"""
-            if config.get('free_delivery_minimum'):
-                base_system += f"Envío gratis en compras mayores a {config.get('currency', '$')}{config['free_delivery_minimum']:,}\n"
-
         # Teléfono de contacto
         if 'contact_phone' in config:
             base_system += f"Teléfono de contacto: {config['contact_phone']}\n"
+
+        # ==========================================
+        # REGLAS INNATAS SEGÚN LA CONFIGURACIÓN (siempre aplican)
+        # ==========================================
+        # Comportamiento derivado solo de los datos del negocio, no del "tipo".
+        has_calendar = bool(config.get('calendar_id'))
+        professionals = config.get('professionals') or []
+        has_multiple_professionals = len(professionals) > 1
+        has_services_or_catalog_pdf = bool(config.get('services')) or config.get('catalog_source') == 'pdf'
+
+        innate_rules = []
+        if has_calendar:
+            innate_rules.append("Para agendar: recopila nombre, correo (OBLIGATORIO), fecha y hora. Confirma antes de crear la cita.")
+            if has_services_or_catalog_pdf:
+                innate_rules.append(
+                    "Si el negocio tiene servicios o catálogo (PDF/manual): pregunta qué servicio desea. "
+                    "Si los precios dependen de variantes (tipo de vehículo, tamaño, modelo, paquete), pregunta esos datos y pásalos en 'detalles' al crear la cita. "
+                    "Cuando pregunten precios o qué tienen, usa ver_servicios."
+                )
+            if has_multiple_professionals:
+                profs_names = ", ".join([p.get("name", "") for p in professionals])
+                innate_rules.append(
+                    f"El negocio tiene varios profesionales ({profs_names}). SIEMPRE pregunta con cuál quieren agendar y usa profesional_id al crear la cita. No agendes sin especificar profesional."
+                )
+                # Agregar regla sobre horarios individuales
+                innate_rules.append(
+                    "⚠️ IMPORTANTE: Cada profesional tiene DIFERENTES días y horarios de trabajo. "
+                    "Consulta la información de cada profesional arriba antes de ofrecer disponibilidad. "
+                    "Si el cliente pide un día que el profesional NO trabaja, indícale los días correctos de ese profesional."
+                )
+        
+        # Requisito de seguro médico
+        if config.get('requires_insurance'):
+            innate_rules.append(
+                "⚠️ SEGURO MÉDICO REQUERIDO: Este negocio requiere seguro médico. "
+                "SIEMPRE pregunta si el paciente tiene seguro antes de agendar. "
+                "Pregunta qué tipo de seguro tienen (ARS, seguro privado, etc.)."
+            )
+
+        if innate_rules:
+            base_system += """
+═══════════════════════════════════════════════════
+REGLAS INNATAS (según la configuración del negocio)
+═══════════════════════════════════════════════════
+Estas reglas aplican siempre; no dependen del tipo de negocio.
+"""
+            for r in innate_rules:
+                base_system += f"- {r}\n"
+            base_system += "\n"
 
         # ==========================================
         # INFORMACIÓN DEL CLIENTE (si existe)
@@ -172,127 +250,75 @@ Teléfono: {customer.phone_number}
                 for key, value in customer.data.items():
                     base_system += f"{key}: {value}\n"
 
+
         # ==========================================
         # INSTRUCCIONES SEGÚN TIPO DE NEGOCIO
         # ==========================================
         
+        # ==========================================
+        # CATÁLOGO PDF (UNIVERSAL - CUALQUIER TIPO DE NEGOCIO)
+        # ==========================================
+        # Si el negocio tiene catalog_source=pdf, agregar instrucciones
+        # independientemente del tipo de negocio (salon, clinic, store, etc.)
+        if config.get('catalog_source') == 'pdf':
+            base_system += """
+═══════════════════════════════════════════════════
+CATÁLOGO EN PDF (ACTIVADO)
+═══════════════════════════════════════════════════
+⚠️ El catálogo/listado de servicios/productos del negocio está en un documento PDF.
+
+CÓMO RESPONDER PREGUNTAS SOBRE PRODUCTOS/SERVICIOS:
+- Cuando el usuario pregunte por productos, precios, servicios, qué tienen, cuánto cuesta algo, etc.
+- USA la herramienta ver_servicios con el parámetro "pregunta" = exactamente lo que el usuario preguntó
+- Ejemplos: "¿Qué servicios ofrecen?", "precios de X", "¿cuánto cuesta Y?", "¿tienen Z?"
+- La IA responderá basándose en el contenido del PDF
+
+NO inventes precios ni servicios. Si el PDF no tiene la información, dilo amablemente.
+"""
+
         areas_restaurante = config.get('areas', ['Salón principal'])
         areas_str = ' / '.join(areas_restaurante) if isinstance(areas_restaurante, list) else areas_restaurante
         
         if business_type == 'salon':
-            # Negocio con servicios + citas (detailing, taller, spa, centro de servicios, etc.). Profesionales opcionales.
-            professionals_info = ""
-            if config.get('professionals'):
-                profs_names = [p['name'] for p in config['professionals']]
-                professionals_info = f"""
-PROFESIONALES/ATENDENTES DISPONIBLES:
-- El negocio tiene los siguientes: {', '.join(profs_names)}
-- Si hay más de uno: pregunta si quieren un profesional específico o con quien esté disponible
-- Si el cliente NO especifica, puedes agendar sin profesional_id (calendario general)
-- Si SÍ quieren uno específico, verifica disponibilidad con buscar_disponibilidad (profesional_id)
-- Si preguntan "¿[Nombre] está disponible?", usa ver_profesionales o buscar_disponibilidad
-"""
-            
-            base_system += f"""
+            base_system += """
 ═══════════════════════════════════════════════════
-INSTRUCCIONES - NEGOCIO CON SERVICIOS Y CITAS
+NEGOCIO DE SERVICIOS (Detailing, spa, taller)
 ═══════════════════════════════════════════════════
-(Cualquier negocio con servicios y citas: detailing, taller, spa, centro de servicios, etc.)
 
-FLUJO DE RESERVACIÓN:
-1. Agradece el contacto cordialmente
-2. Pregunta qué servicio desea (si no lo mencionó). Si preguntan precios o catálogo, usa ver_servicios
-3. Recopila UNO POR UNO (en este orden):
-   • Nombre completo
-   • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO)
-   • Servicio deseado
-   • Si hay profesionales: "¿Con alguien en específico o con quien esté disponible?" (si solo hay uno, omite o confirma)
-   • Fecha preferida
-   • Hora preferida
-4. Si quieren profesional específico: buscar_disponibilidad con profesional_id → crear_cita con profesional_id
-5. Si no: crear_cita SIN profesional_id (calendario general)
-6. Antes de confirmar, resume datos y correo: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-7. Al agendar: "✅ Cita confirmada. Te enviamos la confirmación a [correo]"
+⚠️ REGLA #1 - SIEMPRE PRIMERO:
+Cuando el cliente quiere agendar pero NO especificó el servicio exacto:
+→ Usa ver_servicios para mostrar las opciones disponibles
+→ Pregunta cuál servicio quiere
+→ NO pidas correo ni datos hasta que el cliente elija un servicio
 
-CONSULTAS SOBRE PROFESIONALES:
-- "¿[Nombre] está disponible?" → ver_profesionales y/o buscar_disponibilidad, luego ofrecer agendar
-{professionals_info}
-
-MODIFICAR/CANCELAR:
-- ⚠️ Pregunta correo PRIMERO. Busca cita por fecha/hora/profesional. Confirma envío de confirmación a [correo]
-
-CONFIRMAR ASISTENCIA:
-- Si responden "Sí", "confirmo", etc. a tu mensaje de confirmación → usa confirmar_cita de inmediato
-
-REGLAS:
-- Muestra servicios solo si preguntan o es relevante (ver_servicios)
-- Sin disponibilidad → ofrece alternativas. Sé profesional. Emojis con moderación (📅 ✅ ⏱️)
+Después de saber el servicio:
+1. Pide nombre y correo
+2. Pregunta fecha/hora → buscar_disponibilidad
+3. Crea la cita con crear_cita
 """
 
         elif business_type == 'clinic':
-            # Verificar si hay múltiples profesionales
-            professionals_info = ""
+            prof_note = ""
             if config.get('professionals') and len(config['professionals']) > 1:
-                profs_names = [p['name'] for p in config['professionals']]
-                professionals_info = f"""
-PROFESIONALES DISPONIBLES:
-- La clínica tiene {len(config['professionals'])} profesionales: {', '.join(profs_names)}
-- ⚠️ IMPORTANTE: Si hay múltiples profesionales, SIEMPRE debes preguntar con cuál quieren agendar
-- El profesional es OBLIGATORIO cuando hay múltiples opciones
-- Si el cliente pregunta "¿qué doctores hay?" o "¿quién atiende?", usa ver_profesionales
-- Si preguntan disponibilidad de un profesional específico, usa buscar_disponibilidad con profesional_id
-- NO puedes agendar sin especificar profesional cuando hay múltiples profesionales disponibles
-"""
+                profs = ', '.join([p['name'] for p in config['professionals']])
+                prof_note = f"\n- Doctores: {profs}. Pregunta \"¿con cuál doctor?\" antes de agendar."
             
             base_system += f"""
 ═══════════════════════════════════════════════════
-INSTRUCCIONES ESPECÍFICAS - CLÍNICA/CONSULTORIO
+INSTRUCCIONES - CLÍNICA/CONSULTORIO
 ═══════════════════════════════════════════════════
 
-FLUJO DE CITA MÉDICA:
-1. Agradece el contacto y pregunta en qué puedes ayudar
-2. Recopila los siguientes datos UNO POR UNO (en este orden):
-   • Nombre completo del paciente
-   • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO, incluso si ya lo tienen guardado)
-   • Tipo de consulta o especialidad requerida
-   • ⚠️ Profesional/Doctor (OBLIGATORIO si hay múltiples profesionales - pregunta: "¿Con qué doctor te gustaría agendar?")
-   • Fecha preferida
-   • Hora preferida
-   • Motivo breve de la consulta (opcional)
-3. Si hay múltiples profesionales y el cliente NO especifica:
-   → Muestra profesionales disponibles usando ver_profesionales
-   → Pregunta: "¿Con cuál de nuestros profesionales te gustaría agendar?"
-   → NO procedas sin saber el profesional específico
-4. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-5. Al agendar, confirma explícitamente: "✅ Cita confirmada con [Doctor]. Te enviamos la confirmación a [correo]"
+FLUJO DE CITA:
+1. Pregunta tipo de consulta si no lo dijo
+2. Recopila: nombre, correo (OBLIGATORIO){prof_note}
+3. Usa buscar_disponibilidad para verificar fecha/hora
+4. Usa crear_cita solo después de verificar disponibilidad
+5. Confirma: "Te envío confirmación a [correo]"
 
-CONSULTAS SOBRE PROFESIONALES:
-- Si preguntan "¿qué doctores hay?" o "¿quién atiende?":
-  → Usa ver_profesionales para mostrar todos los profesionales con sus especialidades y horarios
-- Si preguntan "¿[Doctor] está disponible?":
-  → Verifica disponibilidad usando buscar_disponibilidad con profesional_id
-  → Muestra horarios disponibles
-  → Pregunta si quiere agendar con ese doctor
-
-PARA MODIFICAR/CANCELAR:
-- ⚠️ SIEMPRE pregunta el correo electrónico PRIMERO antes de modificar o cancelar
-- Explica: "Para enviarte la confirmación, ¿me podrías proporcionar tu correo electrónico?"
-- Busca la cita por fecha/hora/profesional que mencione, no necesitas ID
-- Confirma: "Te enviaremos la confirmación de [modificación/cancelación] a [correo]"
-- Al completar, confirma: "✅ [Acción] completada. Te enviamos la confirmación a [correo]"
-
-PARA CONFIRMAR ASISTENCIA:
-- Si el usuario responde "Sí", "Si", "confirmo", etc. a un mensaje de confirmación que enviaste
-- USA confirmar_cita INMEDIATAMENTE - NO preguntes "¿de qué estás hablando?"
-- El usuario está confirmando su asistencia a la cita más próxima
-
-REGLAS IMPORTANTES:
-- NUNCA des consejos médicos, diagnósticos ni recetas
-- Emergencias médicas → escala a humano INMEDIATAMENTE
-- Sé empático y profesional
-- Si hay síntomas urgentes, recomienda acudir a emergencias
-- Usa emojis mínimos (🏥 📋 ✅)
-{professionals_info}
+REGLAS:
+- NUNCA des consejos médicos ni diagnósticos
+- Emergencias → escala a humano INMEDIATAMENTE
+- Modificar/cancelar: pide correo primero
 """
 
         elif business_type == 'store':
@@ -361,54 +387,47 @@ REGLAS:
 """
 
         elif business_type == 'general':
-            base_system += """
+            prof_note = ""
+            if config.get('professionals') and len(config['professionals']) > 1:
+                profs = ', '.join([p['name'] for p in config['professionals']])
+                prof_note = f"\n- Profesionales: {profs}. Pregunta \"¿con quién?\" antes de agendar."
+            
+            base_system += f"""
 ═══════════════════════════════════════════════════
-INSTRUCCIONES - NEGOCIO GENÉRICO (CITAS BÁSICAS)
+INSTRUCCIONES - CITAS BÁSICAS
 ═══════════════════════════════════════════════════
-Este negocio solo ofrece citas básicas. No hay listado de servicios ni profesionales.
 
-FLUJO:
-1. Recopila: nombre completo, correo electrónico (OBLIGATORIO), fecha preferida, hora preferida
-2. Usa buscar_disponibilidad para la fecha y luego crear_cita con los datos
-3. No preguntes por "servicio" ni "profesional" - no aplican
-4. Confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
+FLUJO DE CITA:
+1. Recopila: nombre, correo (OBLIGATORIO){prof_note}
+2. Usa buscar_disponibilidad para verificar fecha/hora
+3. Usa crear_cita solo después de verificar disponibilidad
+4. Confirma: "Te envío confirmación a [correo]"
+
+REGLAS:
+- buscar_disponibilidad ANTES de confirmar
+- Modificar/cancelar: pide correo primero
 """
 
         elif business_type == 'restaurant':
             base_system += f"""
 ═══════════════════════════════════════════════════
-INSTRUCCIONES ESPECÍFICAS - RESTAURANTE
+INSTRUCCIONES - RESTAURANTE
 ═══════════════════════════════════════════════════
 
-¡Gracias por comunicarte con {client.business_name}! 🍽️✨
-Este es el contacto para reservaciones.
-
 FLUJO DE RESERVACIÓN:
-1. Agradece el contacto cordialmente
-2. Recopila los siguientes datos UNO POR UNO (en este orden, no todos de golpe):
-   • Nombre y apellido
-   • ⚠️ Correo electrónico (OBLIGATORIO - pregunta DESDE EL PRINCIPIO, incluso si ya lo tienen guardado)
-   • Cantidad de invitados
-   • Fecha de la reservación
-   • Hora preferida
-   • Área preferida ({areas_str})
-   • Ocasión especial (cumpleaños, aniversario, etc.) - opcional
-3. Antes de confirmar, resume TODOS los datos incluyendo el correo y confirma: "Te enviaremos la confirmación a [correo]. ¿Confirmas?"
-4. Al confirmar la reserva, confirma explícitamente: "✅ Reservación confirmada. Te enviamos la confirmación a [correo]"
+1. Recopila: nombre, correo (OBLIGATORIO), número de personas
+2. Pregunta fecha/hora preferida
+3. Usa buscar_disponibilidad ANTES de confirmar
+4. Usa crear_cita con num_personas
+5. Confirma: "Te envío confirmación a [correo]"
 
-PARA MODIFICAR/CANCELAR:
-- ⚠️ SIEMPRE pregunta el correo electrónico PRIMERO antes de modificar o cancelar
-- Explica: "Para enviarte la confirmación, ¿me podrías proporcionar tu correo electrónico?"
-- Busca la reservación por fecha/hora que mencione, no necesitas ID
-- Confirma: "Te enviaremos la confirmación de [modificación/cancelación] a [correo]"
-- Al completar, confirma: "✅ [Acción] completada. Te enviamos la confirmación a [correo]"
+OPCIONES:
+- Áreas: {areas_str}
+- Ocasiones especiales: pregunta si aplica
 
 REGLAS:
-- Grupos grandes (8+ personas) → escala a humano
-- Sé cordial y elegante en el trato
-- Usa emojis con elegancia (🍽️ ✨ 🥂)
-- Agradece siempre por preferir el restaurante
-- Si no hay disponibilidad, ofrece horarios alternativos
+- Grupos 8+ personas → escala a humano
+- Modificar/cancelar: pide correo primero
 """
 
         # ==========================================
@@ -434,6 +453,8 @@ REGLAS:
 ═══════════════════════════════════════════════════
 INSTRUCCIONES TÉCNICAS (NO MENCIONAR AL USUARIO)
 ═══════════════════════════════════════════════════
+
+Las REGLAS INNATAS (según la configuración del negocio) aplican siempre: si hay varios profesionales, pregunta con cuál antes de crear_cita; si hay servicios o variantes de precio, pregunta esos datos y pásalos en "detalles" o en el servicio.
 
 ⚠️ FECHAS - MUY IMPORTANTE ⚠️
 Hoy es: {hoy.strftime("%Y-%m-%d")} ({dia_actual})
@@ -490,8 +511,20 @@ HERRAMIENTAS (no mencionar al usuario):
 - escalar_a_humano: para emergencias/quejas
 
 Formato WhatsApp: *negrita* _cursiva_
+"""
 
-PROMPT PERSONALIZADO DEL NEGOCIO:
+        # ==========================================
+        # INSTRUCCIONES PERSONALIZADAS DEL NEGOCIO (PRIORIDAD MÁXIMA)
+        # ==========================================
+        # Estas instrucciones van AL FINAL para que sobrescriban cualquier regla automática
+        if client.system_prompt_template and client.system_prompt_template.strip():
+            base_system += f"""
+═══════════════════════════════════════════════════
+🔴 INSTRUCCIONES DEL DUEÑO DEL NEGOCIO (PRIORIDAD MÁXIMA)
+═══════════════════════════════════════════════════
+Las siguientes instrucciones fueron escritas por el dueño del negocio.
+SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
+
 {client.system_prompt_template}
 """
         
@@ -686,6 +719,13 @@ PROMPT PERSONALIZADO DEL NEGOCIO:
                     return " ".join(texts)
             if getattr(c0, 'finish_reason', None):
                 logger.debug(f"Gemini finish_reason: {c0.finish_reason}")
+                # Log más detallado cuando no hay contenido
+                if c0.content:
+                    logger.debug(f"Content parts count: {len(c0.content.parts) if c0.content.parts else 0}")
+                    for i, p in enumerate(c0.content.parts or []):
+                        logger.debug(f"  Part {i}: text={getattr(p, 'text', None)[:50] if getattr(p, 'text', None) else None}, function_call={getattr(p, 'function_call', None)}")
+                else:
+                    logger.debug("Response candidate has no content object")
         
         logger.warning("No content found in response")
         return "Lo siento, no pude procesar tu solicitud. ¿Podrías intentarlo de nuevo?"

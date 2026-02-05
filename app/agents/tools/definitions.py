@@ -85,7 +85,8 @@ TOOL_DEFINITIONS = [
             types.FunctionDeclaration(
                 name="crear_cita",
                 description="""Crea una cita, reservación o agenda una entrega.
-                Usa cuando el usuario confirme que quiere agendar y tengas todos los datos necesarios.""",
+                Usa cuando el usuario confirme que quiere agendar y tengas todos los datos necesarios.
+                Para negocios con precios por tipo de vehículo o variantes (detailing, etc.): pasa en 'detalles' el tipo de vehículo (sedan, SUV, camioneta) y cualquier dato que defina el precio. Si hay varios profesionales, profesional_id es OBLIGATORIO.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
@@ -124,6 +125,10 @@ TOOL_DEFINITIONS = [
                         "ocasion": types.Schema(
                             type=types.Type.STRING,
                             description="Ocasión especial (cumpleaños, aniversario, reunión de negocios, etc.)"
+                        ),
+                        "detalles": types.Schema(
+                            type=types.Type.STRING,
+                            description="Detalles que definen precio o servicio: tipo de vehículo (sedan, SUV, camioneta), tamaño, variante del servicio, etc. Todo lo que el negocio use para diferenciar precios o anotar en la cita."
                         ),
                     },
                     required=["fecha", "hora", "servicio"]
@@ -334,25 +339,21 @@ class ToolExecutor:
                 question = f"Información sobre categoría o tema: {categoria}. Responde con productos/precios relevantes del catálogo."
             return await gemini_service.answer_from_context(catalog_text, question)
         
-        # CASO: Negocio con servicios (detailing, taller, spa, centro de servicios, etc.)
-        # Solo usar este bloque si hay servicios definidos; si services es [] (ej. tienda con productos),
-        # dejar que se use el catálogo más abajo.
-        if "services" in self.config and self.config["services"]:
-            services = self.config["services"]
-            if categoria:
-                services = [s for s in services if categoria in s["name"].lower()]
-            
-            if not services:
-                return "No encontré servicios con ese nombre."
-            
-            texto = "📋 *Servicios disponibles:*\n\n"
-            for s in services:
-                mins = s.get('duration') or s.get('duration_minutes')
-                duracion = f"{mins} min" if mins is not None else ""
-                texto += f"• *{s['name']}*\n  💰 {currency}{s['price']:,} | ⏱️ {duracion}\n\n"
-            return texto
+        # PRIORIZAR catálogo sobre servicios genéricos
+        # Si existe catalog con productos, usar eso primero
+        has_real_catalog = ("catalog" in self.config and 
+                           self.config["catalog"].get("categories") and
+                           any(cat.get("products") for cat in self.config["catalog"].get("categories", [])))
         
-        # CASO: Tienda con catálogo (productos; puede tener services: [] en el JSON)
+        # Verificar si los servicios son genéricos/placeholder (precio 0, nombre genérico)
+        services_are_placeholder = False
+        if "services" in self.config and self.config["services"]:
+            # Si todos los servicios tienen precio 0 o nombres genéricos, son placeholder
+            services = self.config["services"]
+            real_services = [s for s in services if s.get('price', 0) > 0 or s.get('name', '').lower() not in ['servicio', 'service']]
+            services_are_placeholder = len(real_services) == 0
+        
+        # CASO: Tienda con catálogo O negocio con servicios placeholder pero catálogo real
         if "catalog" in self.config:
             catalog = self.config["catalog"]
             categories = catalog.get("categories", [])
@@ -389,6 +390,24 @@ class ToolExecutor:
         # CASO: Restaurante
         if "menu_url" in self.config:
             return f"📋 Puedes ver nuestro menú completo aquí: {self.config['menu_url']}"
+        
+        # CASO: Negocio con servicios reales (no placeholder)
+        if "services" in self.config and self.config["services"] and not services_are_placeholder:
+            services = self.config["services"]
+            # Filtrar servicios genéricos/placeholder
+            real_services = [s for s in services if s.get('price', 0) > 0 or s.get('name', '').lower() not in ['servicio', 'service']]
+            if categoria:
+                real_services = [s for s in real_services if categoria in s["name"].lower()]
+            
+            if not real_services:
+                return "No encontré servicios con ese nombre."
+            
+            texto = "📋 *Servicios disponibles:*\n\n"
+            for s in real_services:
+                mins = s.get('duration') or s.get('duration_minutes')
+                duracion = f"{mins} min" if mins is not None else ""
+                texto += f"• *{s['name']}*\n  💰 {currency}{s['price']:,} | ⏱️ {duracion}\n\n"
+            return texto
         
         logger.warning(
             "ver_servicios: cliente %s (%s) no tiene catalog, services ni menu_url en tools_config. "
@@ -519,8 +538,22 @@ class ToolExecutor:
             if not slots:
                 return f"No hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Probamos otra fecha?"
             
-            slots_text = "\n".join([f"• {s['start']} - {s['end']}" for s in slots[:10]])
-            return f"📅 Horarios disponibles para el {fecha.strftime('%d de %B de %Y')}:\n\n{slots_text}\n\n¿Cuál prefieres?"
+            # DEBUG: log slots para diagnosticar
+            logger.info(f"buscar_disponibilidad: {len(slots)} slots encontrados. Primero: {slots[0]['start']}, Último: {slots[-1]['start']}")
+            
+            # Mostrar slots agrupados por mañana/tarde para que el usuario vea todo el rango
+            morning = [s for s in slots if int(s['start'].split(':')[0]) < 12]
+            afternoon = [s for s in slots if int(s['start'].split(':')[0]) >= 12]
+            
+            result = f"📅 Horarios disponibles para el {fecha.strftime('%d de %B de %Y')}:\n\n"
+            
+            if morning:
+                result += f"🌅 Mañana: {morning[0]['start']} - {morning[-1]['end']}\n"
+            if afternoon:
+                result += f"🌇 Tarde: {afternoon[0]['start']} - {afternoon[-1]['end']}\n"
+            
+            result += "\n¿A qué hora te gustaría?"
+            return result
             
         except ValueError:
             return "Formato de fecha inválido. Usa YYYY-MM-DD (ej: 2026-01-24)"
@@ -549,12 +582,17 @@ class ToolExecutor:
             email = args.get("email")
             area = args.get("area")
             ocasion = args.get("ocasion")
+            detalles = args.get("detalles")
             
-            # VALIDACIÓN: Para clínicas con múltiples profesionales, profesional_id es obligatorio
-            if self.business_type == "clinic" and self.config.get("professionals") and len(self.config["professionals"]) > 1:
-                if not profesional_id:
-                    profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
-                    return f"Para agendar tu cita médica, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
+            # VALIDACIÓN INNATA: Si el negocio tiene calendario y varios profesionales, profesional_id es obligatorio (cualquier tipo: clinic, salon, etc.)
+            if (
+                self.config.get("calendar_id")
+                and self.config.get("professionals")
+                and len(self.config["professionals"]) > 1
+                and not profesional_id
+            ):
+                profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
+                return f"Para agendar tu cita, necesito saber con qué profesional te gustaría agendar. Los profesionales disponibles son: {profs_list}. ¿Con cuál te gustaría?"
             
             tz = pytz.timezone(self.config.get('timezone', 'America/Santo_Domingo'))
             fecha = datetime.strptime(f"{fecha_str} {hora_str}", "%Y-%m-%d %H:%M")
@@ -648,6 +686,8 @@ class ToolExecutor:
                 descripcion_extra += f"\n🪑 Área: {area}"
             if ocasion:
                 descripcion_extra += f"\n🎉 Ocasión: {ocasion}"
+            if detalles:
+                descripcion_extra += f"\n📋 Detalles: {detalles}"
             
             # Guardar email del cliente si lo proporciona
             if email:
@@ -744,6 +784,7 @@ class ToolExecutor:
                         
                         appointment_details = {
                             "servicio": servicio,
+                            "detalles": detalles,
                             "profesional": profesional_nombre,
                             "precio": precio_servicio,
                             "direccion": direccion,
@@ -778,7 +819,9 @@ class ToolExecutor:
                     prof_msg = f"\n👨‍⚕️ {profesional_nombre}" if profesional_nombre else ""
                     return f"🏥 *Cita médica confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📋 {servicio}{prof_msg}{email_msg}\n\n¡Le esperamos!"
                 else:
-                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📋 {servicio}{email_msg}\n\n¡Te esperamos! 💖"
+                    det_msg = f"\n📋 {detalles}" if detalles else ""
+                    prof_msg = f"\n👤 {profesional_nombre}" if profesional_nombre else ""
+                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📋 {servicio}{det_msg}{prof_msg}{email_msg}\n\n¡Te esperamos! 💖"
             
             return "No pude crear la cita. Intenta de nuevo."
             
