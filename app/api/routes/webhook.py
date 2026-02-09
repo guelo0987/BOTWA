@@ -226,6 +226,22 @@ async def handle_message(msg: ProcessedMessage):
             logger.debug(f"Procesando documento: {filename}")
             user_message = await media_service.process_document(msg.media_id, filename)
         
+        # Analizar imagen si es necesario
+        elif msg.message_type == "image" and msg.media_id:
+            logger.debug("Analizando imagen...")
+            # Construir contexto del negocio para el análisis
+            business_context = client.metadata or {}
+            business_context['business_name'] = client.business_name
+            business_context['business_type'] = business_context.get('business_type', 'general')
+            
+            # Analizar la imagen con contexto del negocio
+            image_analysis = await media_service.analyze_image(
+                msg.media_id, 
+                msg.content,  # caption original
+                business_context
+            )
+            user_message = image_analysis
+        
         # 5. Cargar historial de conversación
         memory = ConversationMemory(client.id, msg.phone_number)
         

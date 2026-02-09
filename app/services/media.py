@@ -156,6 +156,117 @@ class MediaService:
         except Exception as e:
             logger.error(f"Error procesando documento: {e}")
             return f"[Error al procesar el documento: {filename}]"
+    
+    async def analyze_image(self, media_id: str, caption: str, business_context: dict) -> str:
+        """
+        Analiza una imagen enviada por el usuario usando Gemini Vision.
+        Incluye contexto del negocio para dar respuestas inteligentes.
+        
+        Args:
+            media_id: ID de la imagen en WhatsApp
+            caption: Texto que acompaña la imagen (si hay)
+            business_context: Configuración del negocio (catalog, services, professionals)
+            
+        Returns:
+            Descripción/análisis de la imagen con contexto del negocio
+        """
+        try:
+            # Descargar la imagen
+            image_content = await self.download_media(media_id)
+            
+            if not image_content:
+                return f"[No se pudo descargar la imagen]{' - ' + caption if caption else ''}"
+            
+            # Construir contexto del negocio para el análisis
+            context_parts = []
+            
+            # Catálogo de productos
+            if 'catalog' in business_context:
+                categories = business_context['catalog'].get('categories', [])
+                if categories:
+                    productos = []
+                    for cat in categories:
+                        for prod in cat.get('products', []):
+                            precio = prod.get('price', 'N/A')
+                            productos.append(f"- {prod['name']}: ${precio}")
+                    if productos:
+                        context_parts.append(f"CATÁLOGO DE PRODUCTOS:\n" + "\n".join(productos[:20]))  # Limitar a 20
+            
+            # Servicios
+            if 'services' in business_context:
+                servicios = []
+                for s in business_context['services']:
+                    if s.get('price', 0) > 0:  # Solo servicios reales
+                        servicios.append(f"- {s['name']}: ${s['price']}")
+                if servicios:
+                    context_parts.append(f"SERVICIOS DISPONIBLES:\n" + "\n".join(servicios[:10]))
+            
+            # Profesionales
+            if 'professionals' in business_context:
+                profs = []
+                for p in business_context['professionals']:
+                    profs.append(f"- {p['name']} ({p.get('specialty', 'General')})")
+                if profs:
+                    context_parts.append(f"PROFESIONALES:\n" + "\n".join(profs))
+            
+            # Nombre del negocio
+            business_name = business_context.get('business_name', 'el negocio')
+            business_type = business_context.get('business_type', 'general')
+            
+            context_text = "\n\n".join(context_parts) if context_parts else "No hay catálogo específico configurado."
+            
+            # Prompt para Gemini Vision
+            user_caption = f'\n\nEl usuario dice: "{caption}"' if caption and caption != "[Imagen recibida]" else ""
+            
+            prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
+
+CONTEXTO DEL NEGOCIO:
+{context_text}
+
+TAREA:
+Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
+
+INSTRUCCIONES:
+1. Describe brevemente qué ves en la imagen
+2. Si es un producto que parece estar en nuestro catálogo, identifícalo y menciona el precio
+3. Si es una consulta sobre algo que vendemos/ofrecemos, da información útil
+4. Si no puedes identificar el producto exacto, sugiere opciones similares del catálogo
+5. Sé amable y ofrece ayuda adicional
+
+Responde en español, de forma concisa y útil para WhatsApp (usa *negritas* y emojis moderadamente)."""
+
+            # Llamar a Gemini con la imagen
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_bytes(
+                                data=image_content,
+                                mime_type="image/jpeg"  # WhatsApp normalmente usa JPEG
+                            ),
+                            types.Part.from_text(text=prompt)
+                        ]
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=500,
+                )
+            )
+            
+            if response.text is None:
+                logger.warning("Gemini devolvió análisis vacío para imagen")
+                return f"[Imagen recibida]{' - ' + caption if caption else ''}"
+            
+            analysis = response.text.strip()
+            logger.debug("Imagen analizada correctamente")
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error analizando imagen: {e}", exc_info=True)
+            return f"[No pude analizar la imagen]{' - ' + caption if caption else ''}"
 
 
 # Instancia global

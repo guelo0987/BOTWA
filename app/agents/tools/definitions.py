@@ -747,13 +747,14 @@ class ToolExecutor:
             nombre = self.customer.full_name or "Cliente"
             titulo = f"{titulo_prefix}{servicio} - {nombre}"
             
-            # Crear en Google Calendar
+            # Crear en Google Calendar - incluir precio si está disponible
+            precio_str = f"\nPrecio: {currency}{precio_servicio:,}" if precio_servicio else ""
             evento = await calendar_service.create_appointment(
                 calendar_id=calendar_id,
                 title=titulo,
                 start_time=fecha,
                 end_time=fin,
-                description=f"Agendado via WhatsApp\nServicio: {servicio}{descripcion_extra}\nTeléfono: {self.customer.phone_number}" + (f"\nEmail: {email}" if email else ""),
+                description=f"Agendado via WhatsApp\nServicio: {servicio}{descripcion_extra}{precio_str}\nTeléfono: {self.customer.phone_number}" + (f"\nEmail: {email}" if email else ""),
                 attendee_phone=self.customer.phone_number,
                 config=self.config
             )
