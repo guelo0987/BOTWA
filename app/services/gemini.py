@@ -276,8 +276,7 @@ CÓMO RESPONDER PREGUNTAS SOBRE PRODUCTOS/SERVICIOS:
 NO inventes precios ni servicios. Si el PDF no tiene la información, dilo amablemente.
 """
 
-        areas_restaurante = config.get('areas', ['Salón principal'])
-        areas_str = ' / '.join(areas_restaurante) if isinstance(areas_restaurante, list) else areas_restaurante
+
         
         if business_type == 'salon':
             base_system += """
@@ -409,6 +408,8 @@ REGLAS:
 """
 
         elif business_type == 'restaurant':
+            areas_restaurante = config.get('areas', ['Salón principal'])
+            areas_str = ' / '.join(areas_restaurante) if isinstance(areas_restaurante, list) else areas_restaurante
             base_system += f"""
 ═══════════════════════════════════════════════════
 INSTRUCCIONES - RESTAURANTE
@@ -680,14 +681,14 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 )
                 
                 # Continuar la conversación con el resultado
-                from app.agents.tools.definitions import TOOL_DEFINITIONS as TOOLS
+                from app.agents.tools.definitions import TOOL_DEFINITIONS
                 new_response = await self.client.aio.models.generate_content(
                     model=self.model,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=0.7,
                         max_output_tokens=1024,
-                        tools=TOOLS,
+                        tools=TOOL_DEFINITIONS,
                     )
                 )
                 
@@ -707,19 +708,11 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
         if hasattr(response, 'text') and response.text and response.text.strip():
             return response.text.strip()
         
-        # Último recurso: intentar de candidate.content.parts por si no entró arriba
+        # Debug logging cuando no hay contenido
         if response.candidates:
             c0 = response.candidates[0]
-            if c0.content and c0.content.parts:
-                texts = []
-                for p in c0.content.parts:
-                    if getattr(p, 'text', None) and str(p.text).strip():
-                        texts.append(str(p.text).strip())
-                if texts:
-                    return " ".join(texts)
             if getattr(c0, 'finish_reason', None):
                 logger.debug(f"Gemini finish_reason: {c0.finish_reason}")
-                # Log más detallado cuando no hay contenido
                 if c0.content:
                     logger.debug(f"Content parts count: {len(c0.content.parts) if c0.content.parts else 0}")
                     for i, p in enumerate(c0.content.parts or []):

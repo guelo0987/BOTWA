@@ -272,10 +272,9 @@ async def handle_message(msg: ProcessedMessage):
             return
         
         # Si no hay intervención humana, procesar normalmente con IA
-        history = await memory.get_context_for_llm()
         # Agregar el mensaje actual del usuario al historial
         await memory.add_message("user", user_message)
-        # Recargar historial completo (incluye el mensaje que acabamos de agregar)
+        # Cargar historial completo (incluye el mensaje que acabamos de agregar)
         history = await memory.get_context_for_llm()
         
         # 6. Generar respuesta con Gemini

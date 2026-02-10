@@ -2,7 +2,6 @@
 Servicio automático de tareas programadas usando APScheduler.
 Este servicio ejecuta recordatorios y confirmaciones automáticamente sin necesidad de cron externo.
 """
-import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger

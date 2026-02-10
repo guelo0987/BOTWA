@@ -304,6 +304,20 @@ class ToolExecutor:
         self.escalated = False
         self.escalation_data = None
     
+    def _find_professional(self, profesional_id: str) -> dict | None:
+        """Busca un profesional por ID exacto o por nombre parcial (case-insensitive)."""
+        profs = self.config.get("professionals", [])
+        if not profs:
+            return None
+        # ID exacto primero
+        prof = next((p for p in profs if p["id"] == profesional_id), None)
+        if not prof:
+            pid = profesional_id.lower()
+            prof = next((p for p in profs
+                        if pid in p.get("name", "").lower()
+                        or pid in p.get("id", "").lower()), None)
+        return prof
+    
     async def execute(self, function_name: str, args: dict) -> str:
         """Ejecuta una función por nombre."""
         logger.info(f"Ejecutando: {function_name} | Tipo: {self.business_type}")
@@ -649,25 +663,17 @@ class ToolExecutor:
             precio_servicio = None
             
             # CASO: Profesional específico (Clínica o Salón)
+            prof = None
             if profesional_id and self.config.get("professionals"):
-                # Buscar por ID exacto primero
-                prof = next((p for p in self.config["professionals"] if p["id"] == profesional_id), None)
-                # Si no lo encuentra, buscar por nombre (parcial, case-insensitive)
-                if not prof:
-                    profesional_lower = profesional_id.lower()
-                    prof = next((p for p in self.config["professionals"] 
-                                if profesional_lower in p.get("name", "").lower() 
-                                or profesional_lower in p.get("id", "").lower()), None)
+                prof = self._find_professional(profesional_id)
                 if prof:
-                    # Si el profesional tiene su propio calendario, usarlo
                     if prof.get("calendar_id"):
-                        calendar_id = prof.get("calendar_id")
-                    # Si no tiene calendario propio, usar el general pero marcar el profesional
+                        calendar_id = prof["calendar_id"]
                     titulo_prefix = f"{prof['name']} - "
                     profesional_nombre = prof['name']
                     descripcion_extra = f"\nProfesional: {prof['name']}"
                     if prof.get("slot_duration"):
-                        duration = prof.get("slot_duration", duration)
+                        duration = prof["slot_duration"]
                 else:
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"No encontré a '{profesional_id}'. Los profesionales disponibles son: {profs_list}"
@@ -682,12 +688,11 @@ class ToolExecutor:
                     descripcion_extra += f"\nPrecio: {precio_servicio}"
             
             # CASO: Tienda con delivery
+            from app.services.client_service import client_service
             if self.business_type == "store":
                 duration = self.config.get("delivery_duration", 60)
                 if direccion:
                     descripcion_extra += f"\n📍 Dirección: {direccion}"
-                    # Guardar dirección del cliente
-                    from app.services.client_service import client_service
                     await client_service.update_customer_data(self.customer.id, {"direccion": direccion})
             
             # CASO: Restaurante
@@ -702,7 +707,6 @@ class ToolExecutor:
             
             # Guardar email del cliente si lo proporciona
             if email:
-                from app.services.client_service import client_service
                 await client_service.update_customer_data(self.customer.id, {"email": email})
             
             # ==========================================
@@ -712,12 +716,8 @@ class ToolExecutor:
             from app.services.calendar import calendar_service
             
             # Actualizar working_hours si es un profesional con horario específico
-            if profesional_id and self.config.get("professionals"):
-                prof = next((p for p in self.config["professionals"] 
-                            if profesional_id.lower() in p.get("name", "").lower() 
-                            or profesional_id.lower() in p.get("id", "").lower()), None)
-                if prof and prof.get("business_hours"):
-                    working_hours = prof.get("business_hours", working_hours)
+            if prof and prof.get("business_hours"):
+                working_hours = prof["business_hours"]
             
             # Obtener configuración para el calendario específico
             config_for_calendar = {
@@ -759,7 +759,7 @@ class ToolExecutor:
             titulo = f"{titulo_prefix}{servicio} - {nombre}"
             
             # Crear en Google Calendar - incluir precio si está disponible
-            precio_str = f"\nPrecio: {currency}{precio_servicio:,}" if precio_servicio else ""
+            precio_str = f"\nPrecio: {precio_servicio}" if precio_servicio else ""
             evento = await calendar_service.create_appointment(
                 calendar_id=calendar_id,
                 title=titulo,
@@ -922,7 +922,7 @@ class ToolExecutor:
             return (
                 f"✅ *¡Perfecto! Tu asistencia está confirmada.*\n\n"
                 f"📅 Fecha: {fecha_local.strftime('%d de %B de %Y')}\n"
-                f"🕐 Hora: {fecha_local.strftime('%H:%M')}\n"
+                f"🕐 Hora: {_format_time_ampm(fecha_local.strftime('%H:%M'))}\n"
                 f"🏥 {self.client.business_name}\n\n"
                 f"Te esperamos. Si necesitas cancelar o modificar, avísame con anticipación."
             )
@@ -990,9 +990,7 @@ class ToolExecutor:
                     
                     # Si hay profesional_id, filtrar por profesional en notes
                     if profesional_id and self.config.get("professionals"):
-                        prof = next((p for p in self.config["professionals"] 
-                                    if profesional_id.lower() in p.get("name", "").lower() 
-                                    or profesional_id.lower() in p.get("id", "").lower()), None)
+                        prof = self._find_professional(profesional_id)
                         if prof:
                             query = query.where(Appointment.notes.contains(prof['name']))
                     
@@ -1057,7 +1055,7 @@ class ToolExecutor:
                     
                     fecha_local = appointment.start_time.astimezone(tz)
                     email_msg = f"\n\n📧 Te enviamos confirmación de cancelación a {customer_email}" if email_enviado else ""
-                    return f"✅ *Cita cancelada*\n\n📅 {fecha_local.strftime('%d de %B de %Y')}\n🕐 {fecha_local.strftime('%H:%M')}{email_msg}\n\n¿Deseas agendar otra cita?"
+                    return f"✅ *Cita cancelada*\n\n📅 {fecha_local.strftime('%d de %B de %Y')}\n🕐 {_format_time_ampm(fecha_local.strftime('%H:%M'))}{email_msg}\n\n¿Deseas agendar otra cita?"
                 
                 return "No pude cancelar la cita en el calendario. Intenta de nuevo."
             
