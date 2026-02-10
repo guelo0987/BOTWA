@@ -14,6 +14,17 @@ from app.core.database import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _format_time_ampm(time_str: str) -> str:
+    """Convierte hora 24h (HH:MM) a formato 12h con AM/PM."""
+    try:
+        h, m = map(int, time_str.split(':'))
+        period = 'AM' if h < 12 else 'PM'
+        h12 = h % 12 or 12
+        return f"{h12}:{m:02d} {period}"
+    except Exception:
+        return time_str
+
+
 # ==========================================
 # DEFINICIÓN DE TOOLS PARA GEMINI
 # ==========================================
@@ -96,7 +107,7 @@ TOOL_DEFINITIONS = [
                         ),
                         "hora": types.Schema(
                             type=types.Type.STRING,
-                            description="Hora en formato HH:MM (24 horas)"
+                            description="Hora en formato HH:MM en 24 horas. SIEMPRE usa 24h: 6 PM = 18:00, 1 PM = 13:00, 9 AM = 09:00"
                         ),
                         "servicio": types.Schema(
                             type=types.Type.STRING,
@@ -217,7 +228,7 @@ TOOL_DEFINITIONS = [
                         ),
                         "hora_nueva": types.Schema(
                             type=types.Type.STRING,
-                            description="Nueva hora en formato HH:MM"
+                            description="Nueva hora en formato HH:MM en 24 horas. SIEMPRE usa 24h: 6 PM = 18:00, 1 PM = 13:00"
                         ),
                         "profesional_id": types.Schema(
                             type=types.Type.STRING,
@@ -548,9 +559,9 @@ class ToolExecutor:
             result = f"📅 Horarios disponibles para el {fecha.strftime('%d de %B de %Y')}:\n\n"
             
             if morning:
-                result += f"🌅 Mañana: {morning[0]['start']} - {morning[-1]['end']}\n"
+                result += f"🌅 Mañana: {_format_time_ampm(morning[0]['start'])} - {_format_time_ampm(morning[-1]['end'])}\n"
             if afternoon:
-                result += f"🌇 Tarde: {afternoon[0]['start']} - {afternoon[-1]['end']}\n"
+                result += f"🌇 Tarde: {_format_time_ampm(afternoon[0]['start'])} - {_format_time_ampm(afternoon[-1]['end'])}\n"
             
             result += "\n¿A qué hora te gustaría?"
             return result
@@ -625,8 +636,8 @@ class ToolExecutor:
             hora_inicio = start_hour * 60 + start_min
             hora_fin = end_hour * 60 + end_min
             
-            if hora_cita < hora_inicio or hora_cita >= hora_fin:
-                return f"Esa hora está fuera de nuestro horario de atención ({working_hours['start']} - {working_hours['end']}). ¿Te funciona algún horario dentro de ese rango?"
+            if hora_cita < hora_inicio or hora_cita > hora_fin:
+                return f"Esa hora está fuera de nuestro horario de atención ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])}). ¿Te funciona algún horario dentro de ese rango?"
             
             # Determinar calendario y duración
             calendar_id = self.calendar_id
@@ -737,9 +748,9 @@ class ToolExecutor:
             
             if not slot_disponible:
                 # Formatear slots disponibles para mostrar al usuario
-                slots_text = "\n".join([f"• {s['start']} - {s['end']}" for s in slots_disponibles[:10]])
+                slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
                 if slots_disponibles:
-                    return f"❌ Lo siento, el horario {hora_solicitada} no está disponible para el {fecha.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
+                    return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
                 else:
                     return f"❌ Lo siento, no hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
             
@@ -810,19 +821,20 @@ class ToolExecutor:
                 # ==========================================
                 email_msg = "\n\n📧 Te enviamos confirmación a tu correo." if email_enviado else ""
                 
+                hora_display = _format_time_ampm(hora_str)
                 if self.business_type == "store":
-                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📦 {servicio}\n📍 {direccion or 'Pendiente'}{email_msg}\n\n¡Te esperamos!"
+                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📦 {servicio}\n📍 {direccion or 'Pendiente'}{email_msg}\n\n¡Te esperamos!"
                 elif self.business_type == "restaurant":
                     area_msg = f"\n🪑 Área: {area}" if area else ""
                     ocasion_msg = f"\n🎉 Ocasión: {ocasion}" if ocasion else ""
-                    return f"🍽️ *¡Reservación confirmada!*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n👥 {num_personas or 2} personas{area_msg}{ocasion_msg}{email_msg}\n\n¡Será un placer atenderles! 🥂"
+                    return f"🍽️ *¡Reservación confirmada!*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n👥 {num_personas or 2} personas{area_msg}{ocasion_msg}{email_msg}\n\n¡Será un placer atenderles! 🥂"
                 elif self.business_type == "clinic":
                     prof_msg = f"\n👨‍⚕️ {profesional_nombre}" if profesional_nombre else ""
-                    return f"🏥 *Cita médica confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📋 {servicio}{prof_msg}{email_msg}\n\n¡Le esperamos!"
+                    return f"🏥 *Cita médica confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{prof_msg}{email_msg}\n\n¡Le esperamos!"
                 else:
                     det_msg = f"\n📋 {detalles}" if detalles else ""
                     prof_msg = f"\n👤 {profesional_nombre}" if profesional_nombre else ""
-                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_str}\n📋 {servicio}{det_msg}{prof_msg}{email_msg}\n\n¡Te esperamos! 💖"
+                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{det_msg}{prof_msg}{email_msg}\n\n¡Te esperamos! 💖"
             
             return "No pude crear la cita. Intenta de nuevo."
             
@@ -866,7 +878,7 @@ class ToolExecutor:
             for cita in citas:
                 fecha_local = cita.start_time.astimezone(tz)
                 texto += f"• {cita.notes or 'Cita'}\n"
-                texto += f"  📅 {fecha_local.strftime('%d/%m/%Y')} a las {fecha_local.strftime('%H:%M')}\n"
+                texto += f"  📅 {fecha_local.strftime('%d/%m/%Y')} a las {_format_time_ampm(fecha_local.strftime('%H:%M'))}\n"
                 if cita.google_event_id:
                     texto += f"  ID: `{cita.google_event_id}`\n\n"
                 else:
@@ -1099,8 +1111,8 @@ class ToolExecutor:
             hora_inicio = start_hour * 60 + start_min
             hora_fin = end_hour * 60 + end_min
             
-            if hora_cita < hora_inicio or hora_cita >= hora_fin:
-                return f"Esa hora está fuera del horario ({working_hours['start']} - {working_hours['end']})"
+            if hora_cita < hora_inicio or hora_cita > hora_fin:
+                return f"Esa hora está fuera del horario ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])})"
             
             # Buscar cita antigua
             async with AsyncSessionLocal() as session:
@@ -1183,9 +1195,9 @@ class ToolExecutor:
                 
                 if not slot_disponible:
                     # Formatear slots disponibles para mostrar al usuario
-                    slots_text = "\n".join([f"• {s['start']} - {s['end']}" for s in slots_disponibles[:10]])
+                    slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
                     if slots_disponibles:
-                        return f"❌ Lo siento, el horario {hora_solicitada} no está disponible para el {fecha_nueva.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
+                        return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha_nueva.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
                     else:
                         return f"❌ Lo siento, no hay horarios disponibles para el {fecha_nueva.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
                 
@@ -1265,13 +1277,14 @@ class ToolExecutor:
                     email_msg = "\n\n📧 Te enviamos confirmación a tu correo." if email_enviado else ""
                     
                     # Mensaje de confirmación
+                    hora_nueva_display = _format_time_ampm(hora_nueva_str)
                     if self.business_type == "restaurant":
-                        return f"🍽️ *¡Reservación modificada!*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_str}{email_msg}\n\n¡Será un placer atenderles! 🥂"
+                        return f"🍽️ *¡Reservación modificada!*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{email_msg}\n\n¡Será un placer atenderles! 🥂"
                     elif self.business_type == "clinic":
                         prof_msg = f"\n👨‍⚕️ {profesional_nombre}" if profesional_nombre else ""
-                        return f"🏥 *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_str}{prof_msg}{email_msg}\n\n¡Le esperamos!"
+                        return f"🏥 *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{prof_msg}{email_msg}\n\n¡Le esperamos!"
                     else:
-                        return f"✅ *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_str}{email_msg}\n\n¡Te esperamos!"
+                        return f"✅ *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{email_msg}\n\n¡Te esperamos!"
                 
                 except HttpError as e:
                     logger.error(f"Error en calendario al modificar cita: {e}")

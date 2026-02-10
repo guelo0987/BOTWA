@@ -230,7 +230,7 @@ async def handle_message(msg: ProcessedMessage):
         elif msg.message_type == "image" and msg.media_id:
             logger.debug("Analizando imagen...")
             # Construir contexto del negocio para el análisis
-            business_context = client.metadata or {}
+            business_context = dict(client.tools_config) if client.tools_config else {}
             business_context['business_name'] = client.business_name
             business_context['business_type'] = business_context.get('business_type', 'general')
             
@@ -240,7 +240,23 @@ async def handle_message(msg: ProcessedMessage):
                 msg.content,  # caption original
                 business_context
             )
-            user_message = image_analysis
+            
+            # Construir mensaje con contexto claro para el chat principal
+            original_caption = msg.content if msg.content and msg.content != "[Imagen recibida]" else ""
+            if original_caption:
+                user_message = (
+                    f"[El cliente envió una imagen con el mensaje: \"{original_caption}\"]\n\n"
+                    f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
+                    f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
+                    f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
+                )
+            else:
+                user_message = (
+                    f"[El cliente envió una imagen sin texto adicional]\n\n"
+                    f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
+                    f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
+                    f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
+                )
         
         # 5. Cargar historial de conversación
         memory = ConversationMemory(client.id, msg.phone_number)
