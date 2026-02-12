@@ -190,7 +190,8 @@ TOOL_DEFINITIONS = [
                 name="cancelar_cita",
                 description="""Cancela una cita, reservación o pedido existente.
                 Puedes usar evento_id, o buscar por fecha/profesional si el usuario describe la cita.
-                SIEMPRE necesitas el email del cliente para enviar confirmación.""",
+                IMPORTANTE: Si el usuario menciona una fecha relativa (mañana, el domingo, etc.), DEBES convertirla al formato YYYY-MM-DD y pasarla en el parámetro 'fecha'. También pasa la hora si la conoces. Esto es NECESARIO para cancelar la cita correcta.
+                El email es opcional. Si el cliente lo proporciona, se envía confirmación. Si no, se cancela sin email.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
@@ -212,10 +213,9 @@ TOOL_DEFINITIONS = [
                         ),
                         "email": types.Schema(
                             type=types.Type.STRING,
-                            description="Correo electrónico del cliente para enviar confirmación de cancelación (OBLIGATORIO)"
+                            description="Correo electrónico del cliente para enviar confirmación de cancelación (opcional)"
                         ),
                     },
-                    required=["email"]
                 )
             ),
             types.FunctionDeclaration(
@@ -1030,7 +1030,26 @@ class ToolExecutor:
                     result = await session.execute(query)
                     appointment = result.scalar_one_or_none()
                 
-                # Si no se encontró, buscar la próxima cita del cliente
+                # Si no se encontró por fecha/hora exacta, buscar por solo fecha (sin hora)
+                if not appointment and fecha_str and not hora_str:
+                    fecha_dia = datetime.strptime(fecha_str, "%Y-%m-%d")
+                    fecha_dia = tz.localize(fecha_dia)
+                    fecha_inicio_dia = fecha_dia.replace(hour=0, minute=0, second=0)
+                    fecha_fin_dia = fecha_dia.replace(hour=23, minute=59, second=59)
+                    
+                    query_dia = select(Appointment).where(
+                        and_(
+                            Appointment.customer_id == self.customer.id,
+                            Appointment.client_id == self.client.id,
+                            Appointment.status == "CONFIRMED",
+                            Appointment.start_time >= fecha_inicio_dia,
+                            Appointment.start_time <= fecha_fin_dia
+                        )
+                    )
+                    result = await session.execute(query_dia)
+                    appointment = result.scalar_one_or_none()
+                
+                # Si aún no se encontró, listar citas para que el usuario elija
                 if not appointment:
                     result = await session.execute(
                         select(Appointment).where(
@@ -1040,9 +1059,22 @@ class ToolExecutor:
                                 Appointment.status == "CONFIRMED",
                                 Appointment.start_time >= datetime.now(pytz.UTC)
                             )
-                        ).order_by(Appointment.start_time).limit(1)
+                        ).order_by(Appointment.start_time)
                     )
-                    appointment = result.scalar_one_or_none()
+                    citas = result.scalars().all()
+                    
+                    if len(citas) == 1:
+                        # Solo una cita → usarla directamente
+                        appointment = citas[0]
+                    elif len(citas) > 1:
+                        # Varias citas → pedir al usuario que especifique
+                        texto = "Tienes varias citas programadas. ¿Cuál deseas cancelar?\n\n"
+                        for cita in citas:
+                            fecha_local = cita.start_time.astimezone(tz)
+                            texto += f"• {cita.notes or 'Cita'}\n"
+                            texto += f"  📅 {fecha_local.strftime('%A %d de %B')} a las {_format_time_ampm(fecha_local.strftime('%H:%M'))}\n\n"
+                        texto += "Dime la fecha de la cita que deseas cancelar."
+                        return texto
                 
                 if not appointment:
                     return "No encontré la cita que quieres cancelar. ¿Puedes darme más detalles?"
@@ -1065,8 +1097,11 @@ class ToolExecutor:
                     appointment.status = "CANCELLED"
                     await session.commit()
                     
-                    # Usar email proporcionado o el guardado
+                    # Usar email proporcionado o el guardado, validar que sea email real
                     customer_email = email or (self.customer.data.get("email") if self.customer.data else None)
+                    # Validar que sea un email real (contiene @) y no un teléfono
+                    if customer_email and "@" not in customer_email:
+                        customer_email = None
                     email_enviado = False
                     
                     if customer_email:
