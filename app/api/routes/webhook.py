@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Query, BackgroundTasks
 from fastapi.responses import PlainTextResponse
+import hmac
+import hashlib
 import logging
 
 from app.core.config import settings
@@ -8,7 +10,7 @@ from app.services.whatsapp import whatsapp_service
 from app.services.client_service import client_service
 from app.services.gemini import gemini_service
 from app.services.media import media_service
-from app.core.redis import ConversationMemory
+from app.core.redis import ConversationMemory, get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,22 @@ async def receive_webhook(
     Los mensajes se procesan de forma asíncrona en background tasks.
     """
     try:
-        body = await request.json()
+        body_bytes = await request.body()
+        
+        # --- VERIFICACIÓN DE FIRMA (X-Hub-Signature-256) ---
+        if settings.WHATSAPP_APP_SECRET:
+            signature = request.headers.get("X-Hub-Signature-256", "")
+            expected = "sha256=" + hmac.new(
+                settings.WHATSAPP_APP_SECRET.encode(),
+                body_bytes,
+                hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                logger.warning("Webhook con firma inválida rechazado")
+                raise HTTPException(status_code=401, detail="Invalid signature")
+        
+        import json
+        body = json.loads(body_bytes)
         logger.debug("Webhook recibido")
         
         webhook_data = WhatsAppWebhook(**body)
@@ -73,9 +90,48 @@ async def receive_webhook(
                 # Procesar mensajes entrantes
                 if change.field == "messages" and value.messages:
                     for message in value.messages:
+                        # --- DEDUPLICACIÓN ---
+                        try:
+                            redis = get_redis()
+                            dedup_key = f"processed:{message.id}"
+                            if await redis.get(dedup_key):
+                                logger.debug(f"Mensaje duplicado ignorado: {message.id}")
+                                continue
+                            await redis.set(dedup_key, "1", ex=300)  # 5 min TTL
+                        except Exception:
+                            pass  # Si Redis falla, procesar de todos modos
+                        
                         processed = process_incoming_message(message, value)
                         
                         if processed:
+                            # --- RATE LIMITING (10 msgs/min por teléfono) ---
+                            try:
+                                redis = get_redis()
+                                rate_key = f"rate:{processed.phone_number}"
+                                count = await redis.incr(rate_key)
+                                if count == 1:
+                                    await redis.expire(rate_key, 60)
+                                if count > 10:
+                                    logger.warning(f"Rate limit alcanzado para {processed.phone_number}")
+                                    if count == 11:  # Solo avisar una vez
+                                        # Buscar client para poder responder
+                                        try:
+                                            rl_client = await client_service.get_client_by_phone_id(processed.phone_number_id)
+                                            if rl_client and rl_client.whatsapp_access_token:
+                                                await whatsapp_service.send_text_message(
+                                                    to=processed.phone_number,
+                                                    message="⚠️ Estás enviando mensajes muy rápido. Por favor espera un momento antes de continuar.",
+                                                    access_token=rl_client.whatsapp_access_token,
+                                                    phone_number_id=rl_client.whatsapp_instance_id,
+                                                    api_version=rl_client.whatsapp_api_version or "v21.0",
+                                                    client_id=rl_client.id,
+                                                )
+                                        except Exception:
+                                            pass
+                                    continue
+                            except Exception:
+                                pass  # Si Redis falla, no limitar
+                            
                             logger.debug(f"[{processed.message_type}] {processed.contact_name}")
                             background_tasks.add_task(handle_message, processed)
                 
@@ -97,6 +153,8 @@ async def receive_webhook(
         
         return {"status": "received"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error procesando webhook: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error processing webhook")
@@ -136,6 +194,11 @@ def process_incoming_message(message, value) -> ProcessedMessage | None:
             lat = message.location.latitude
             lon = message.location.longitude
             content = f"[Ubicación: {lat}, {lon}]"
+        
+        elif message_type in ("sticker", "reaction", "contacts", "ephemeral", "unsupported"):
+            # Tipos que no requieren procesamiento por IA
+            logger.debug(f"Tipo de mensaje ignorado: {message_type}")
+            return None
             
         else:
             content = f"[Mensaje tipo {message_type}]"
@@ -192,11 +255,17 @@ async def handle_message(msg: ProcessedMessage):
         
         if not client:
             logger.warning(f"Client no encontrado: {msg.phone_number_id}")
-            await whatsapp_service.send_text_message(
-                to=msg.phone_number,
-                message="Lo siento, este servicio no está disponible."
-            )
             return
+        
+        # Verificar que el client tenga token de WhatsApp configurado
+        if not client.whatsapp_access_token:
+            logger.error(f"Client {client.business_name} sin whatsapp_access_token configurado")
+            return
+        
+        # Extraer credenciales del client (usadas en todo el handler)
+        wa_token = client.whatsapp_access_token
+        wa_phone_id = client.whatsapp_instance_id
+        wa_version = client.whatsapp_api_version or "v24.0"
         
         logger.debug(f"Client: {client.business_name}")
         
@@ -209,22 +278,43 @@ async def handle_message(msg: ProcessedMessage):
         
         logger.debug(f"Customer: {customer.full_name or customer.phone_number}")
         
-        # 3. Marcar como leído
-        await whatsapp_service.mark_as_read(msg.message_id)
+        # 3. Marcar como leído inmediatamente (✓✓ azules)
+        await whatsapp_service.mark_as_read(
+            msg.message_id,
+            access_token=wa_token,
+            phone_number_id=wa_phone_id,
+            api_version=wa_version,
+        )
         
-        # 4. Procesar contenido según tipo
+        # 4. Indicador de "escribiendo..." nativo de WhatsApp
+        try:
+            await whatsapp_service.send_typing_indicator(
+                to=msg.phone_number,
+                message_id=msg.message_id,
+                access_token=wa_token,
+                phone_number_id=wa_phone_id,
+                api_version=wa_version,
+            )
+        except Exception:
+            pass  # No es crítico
+        
+        # 5. Procesar contenido según tipo
         user_message = msg.content
         
         # Transcribir audio si es necesario
         if msg.message_type == "audio" and msg.media_id:
             logger.debug("Transcribiendo audio...")
-            user_message = await media_service.transcribe_audio(msg.media_id)
+            user_message = await media_service.transcribe_audio(
+                msg.media_id, access_token=wa_token, api_version=wa_version
+            )
         
         # Procesar documento si es necesario
         elif msg.message_type == "document" and msg.media_id:
             filename = msg.content.replace("[DOCUMENT:", "").replace("]", "")
             logger.debug(f"Procesando documento: {filename}")
-            user_message = await media_service.process_document(msg.media_id, filename)
+            user_message = await media_service.process_document(
+                msg.media_id, filename, access_token=wa_token, api_version=wa_version
+            )
         
         # Analizar imagen si es necesario
         elif msg.message_type == "image" and msg.media_id:
@@ -238,7 +328,9 @@ async def handle_message(msg: ProcessedMessage):
             image_analysis = await media_service.analyze_image(
                 msg.media_id, 
                 msg.content,  # caption original
-                business_context
+                business_context,
+                access_token=wa_token,
+                api_version=wa_version,
             )
             
             # Construir mensaje con contexto claro para el chat principal
@@ -258,7 +350,7 @@ async def handle_message(msg: ProcessedMessage):
                     f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
                 )
         
-        # 5. Cargar historial de conversación
+        # 6. Cargar historial de conversación
         memory = ConversationMemory(client.id, msg.phone_number)
         
         # ⚠️ VERIFICAR SI HAY INTERVENCIÓN HUMANA (desde Business Suite o Panel Admin)
@@ -277,7 +369,7 @@ async def handle_message(msg: ProcessedMessage):
         # Cargar historial completo (incluye el mensaje que acabamos de agregar)
         history = await memory.get_context_for_llm()
         
-        # 6. Generar respuesta con Gemini
+        # 7. Generar respuesta con Gemini
         logger.debug("Generando respuesta con Gemini...")
         
         response_text = await gemini_service.chat(
@@ -287,14 +379,17 @@ async def handle_message(msg: ProcessedMessage):
             customer=customer
         )
         
-        # 7. Enviar respuesta
+        # 8. Enviar respuesta
         await whatsapp_service.send_text_message(
             to=msg.phone_number,
             message=response_text,
-            client_id=client.id
+            access_token=wa_token,
+            phone_number_id=wa_phone_id,
+            api_version=wa_version,
+            client_id=client.id,
         )
         
-        # 8. Guardar respuesta en memoria
+        # 9. Guardar respuesta en memoria
         await memory.add_message("assistant", response_text)
         
         logger.debug(f"Conversación completada con {msg.phone_number}")
@@ -302,9 +397,16 @@ async def handle_message(msg: ProcessedMessage):
     except Exception as e:
         logger.error(f"Error manejando mensaje: {e}", exc_info=True)
         try:
-            await whatsapp_service.send_text_message(
-                to=msg.phone_number,
-                message="Lo siento, ocurrió un error. Por favor intenta de nuevo en unos momentos."
-            )
+            # Intentar enviar mensaje de error (necesitamos el client)
+            client = await client_service.get_client_by_phone_id(msg.phone_number_id)
+            if client and client.whatsapp_access_token:
+                await whatsapp_service.send_text_message(
+                    to=msg.phone_number,
+                    message="Lo siento, ocurrió un error. Por favor intenta de nuevo en unos momentos.",
+                    access_token=client.whatsapp_access_token,
+                    phone_number_id=client.whatsapp_instance_id,
+                    api_version=client.whatsapp_api_version or "v21.0",
+                    client_id=client.id,
+                )
         except Exception as send_err:
             logger.warning(f"No se pudo enviar mensaje de error al usuario: {send_err}")

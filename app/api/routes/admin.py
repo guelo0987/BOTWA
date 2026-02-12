@@ -3,9 +3,10 @@ Rutas administrativas para el bot WhatsApp.
 Incluye endpoints para gestión de cache, configuración y diagnóstico.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header, Depends
 import logging
 
+from app.core.config import settings
 from app.core.redis import get_redis
 from app.core.database import AsyncSessionLocal
 from app.models.tables import Client
@@ -13,7 +14,19 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+async def verify_admin_key(x_admin_key: str | None = Header(None)):
+    """
+    Verifica la API key de admin.
+    Si ADMIN_API_KEY no está configurada, permite todo (modo desarrollo).
+    """
+    if not settings.ADMIN_API_KEY:
+        return  # Dev mode — sin protección
+    if not x_admin_key or x_admin_key != settings.ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: invalid or missing X-Admin-Key")
+
+
+router = APIRouter(dependencies=[Depends(verify_admin_key)])
 
 
 @router.delete("/catalog-cache/{client_id}")

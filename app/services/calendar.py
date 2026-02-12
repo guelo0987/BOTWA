@@ -1,6 +1,7 @@
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
+import asyncio
 import logging
 import pytz
 
@@ -73,13 +74,15 @@ class CalendarService:
             day_end = tz.localize(datetime(date.year, date.month, date.day, end_hour, end_min))
             
             # Obtener eventos existentes
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=day_start.isoformat(),
-                timeMax=day_end.isoformat(),
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
+            events_result = await asyncio.to_thread(
+                self.service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=day_start.isoformat(),
+                    timeMax=day_end.isoformat(),
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute
+            )
             
             events = events_result.get('items', [])
             
@@ -171,10 +174,12 @@ class CalendarService:
                 },
             }
             
-            created_event = self.service.events().insert(
-                calendarId=calendar_id,
-                body=event
-            ).execute()
+            created_event = await asyncio.to_thread(
+                self.service.events().insert(
+                    calendarId=calendar_id,
+                    body=event
+                ).execute
+            )
             
             logger.info(f"Cita creada: {created_event.get('id')}")
             return created_event
@@ -199,10 +204,12 @@ class CalendarService:
             True si se canceló correctamente
         """
         try:
-            self.service.events().delete(
-                calendarId=calendar_id,
-                eventId=event_id
-            ).execute()
+            await asyncio.to_thread(
+                self.service.events().delete(
+                    calendarId=calendar_id,
+                    eventId=event_id
+                ).execute
+            )
             
             logger.debug(f"Cita cancelada: {event_id}")
             return True
@@ -236,14 +243,16 @@ class CalendarService:
             # Buscar desde hoy en adelante
             now = datetime.now(tz)
             
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=now.isoformat(),
-                maxResults=10,
-                singleEvents=True,
-                orderBy='startTime',
-                q=phone_number  # Buscar en descripción
-            ).execute()
+            events_result = await asyncio.to_thread(
+                self.service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=now.isoformat(),
+                    maxResults=10,
+                    singleEvents=True,
+                    orderBy='startTime',
+                    q=phone_number  # Buscar en descripción
+                ).execute
+            )
             
             events = events_result.get('items', [])
             

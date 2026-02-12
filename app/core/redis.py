@@ -148,21 +148,22 @@ class ConversationMemory:
         status = await self.redis.get(status_key)
         return status in ["human_handled", "escalated"]
     
-    async def set_human_handled(self, handled: bool = True, admin_user: str | None = None):
+    async def set_human_handled(self, handled: bool = True, admin_user: str | None = None, ttl_seconds: int = 1800):
         """
         Marca la conversación como manejada por humano o libera el control.
         
         Args:
             handled: True para marcar como manejada por humano, False para liberar
             admin_user: Usuario/admin que está manejando (opcional)
+            ttl_seconds: Tiempo en segundos antes de que la IA se reanude automáticamente (default: 30 min)
         """
         status_key = f"{self.key}:status"
         admin_key = f"{self.key}:admin"
         
         if handled:
-            await self.redis.set(status_key, "human_handled", ex=settings.SESSION_EXPIRE_SECONDS)
+            await self.redis.set(status_key, "human_handled", ex=ttl_seconds)
             if admin_user:
-                await self.redis.set(admin_key, admin_user, ex=settings.SESSION_EXPIRE_SECONDS)
+                await self.redis.set(admin_key, admin_user, ex=ttl_seconds)
         else:
             await self.redis.delete(status_key)
             await self.redis.delete(admin_key)

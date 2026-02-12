@@ -24,37 +24,38 @@ class MediaService:
         self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
         self.model = settings.GEMINI_MODEL
     
-    async def download_media(self, media_id: str) -> bytes | None:
+    async def download_media(self, media_id: str, *, access_token: str, api_version: str) -> bytes | None:
        
         try:
             # Primero obtener la URL del media
-            media_url = await whatsapp_service.get_media_url(media_id)
+            media_url = await whatsapp_service.get_media_url(media_id, access_token=access_token, api_version=api_version)
             
             if not media_url:
                 logger.error(f"No se pudo obtener URL para media: {media_id}")
                 return None
             
             # Descargar el archivo
-            content = await whatsapp_service.download_media(media_url)
+            content = await whatsapp_service.download_media(media_url, access_token=access_token)
             return content
             
         except Exception as e:
             logger.error(f"Error descargando media: {e}")
             return None
     
-    async def transcribe_audio(self, media_id: str) -> str:
+    async def transcribe_audio(self, media_id: str, *, access_token: str, api_version: str) -> str:
         """
         Transcribe un audio de WhatsApp usando Gemini.
         
         Args:
             media_id: ID del audio en WhatsApp
+            access_token: Token de acceso de Meta del cliente
             
         Returns:
             Texto transcrito
         """
         try:
             # Descargar el audio
-            audio_content = await self.download_media(media_id)
+            audio_content = await self.download_media(media_id, access_token=access_token, api_version=api_version)
             
             if not audio_content:
                 return "[No se pudo descargar el audio]"
@@ -98,19 +99,20 @@ class MediaService:
             logger.error(f"Error transcribiendo audio: {e}", exc_info=True)
             return "[Error al transcribir el audio]"
     
-    async def process_document(self, media_id: str, filename: str) -> str:
+    async def process_document(self, media_id: str, filename: str, *, access_token: str, api_version: str) -> str:
         """
         Procesa un documento (extrae texto si es posible).
         
         Args:
             media_id: ID del documento en WhatsApp
             filename: Nombre del archivo
+            access_token: Token de acceso de Meta del cliente
             
         Returns:
             Descripción o contenido del documento
         """
         try:
-            content = await self.download_media(media_id)
+            content = await self.download_media(media_id, access_token=access_token, api_version=api_version)
             
             if not content:
                 return f"[No se pudo descargar el documento: {filename}]"
@@ -157,7 +159,7 @@ class MediaService:
             logger.error(f"Error procesando documento: {e}")
             return f"[Error al procesar el documento: {filename}]"
     
-    async def analyze_image(self, media_id: str, caption: str, business_context: dict) -> str:
+    async def analyze_image(self, media_id: str, caption: str, business_context: dict, *, access_token: str, api_version: str) -> str:
         """
         Analiza una imagen enviada por el usuario usando Gemini Vision.
         Incluye contexto del negocio para dar respuestas inteligentes.
@@ -166,13 +168,14 @@ class MediaService:
             media_id: ID de la imagen en WhatsApp
             caption: Texto que acompaña la imagen (si hay)
             business_context: Configuración del negocio (catalog, services, professionals)
+            access_token: Token de acceso de Meta del cliente
             
         Returns:
             Descripción/análisis de la imagen con contexto del negocio
         """
         try:
             # Descargar la imagen
-            image_content = await self.download_media(media_id)
+            image_content = await self.download_media(media_id, access_token=access_token, api_version=api_version)
             
             if not image_content:
                 return f"[No se pudo descargar la imagen]{' - ' + caption if caption else ''}"

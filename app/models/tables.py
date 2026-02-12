@@ -14,8 +14,13 @@ class Client(Base):
     
     # Identificación y Seguridad
     business_name = Column(String, nullable=False)   # Ej: "Clínica Moreira"
-    whatsapp_instance_id = Column(String, unique=True, index=True) # Ej: "clinica_moreira"
+    whatsapp_instance_id = Column(String, unique=True, index=True) # Phone Number ID de Meta
     is_active = Column(Boolean, default=True)        # Interruptor de pago
+    
+    # Credenciales WhatsApp (per-client)
+    whatsapp_access_token = Column(String, nullable=True)   # Token de acceso de Meta
+    whatsapp_app_secret = Column(String, nullable=True)     # App Secret para verificar firmas
+    whatsapp_api_version = Column(String, default="v21.0")  # Versión API de Meta
     
     # EL CEREBRO (Personalidad)
     # Aquí guardas: "Eres una recepcionista amable..."

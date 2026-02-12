@@ -1,130 +1,80 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator, ConfigDict
 from functools import lru_cache
-import re
 
 
 class Settings(BaseSettings):
-    """
-    Configuración centralizada del bot.
-    Todas las variables se cargan desde .env
-    """
+    """Configuración centralizada. TODO se carga desde .env"""
     
-    ENV_MODE: str = "dev"
-    LOG_LEVEL: str = "INFO"
+    ENV_MODE: str
+    LOG_LEVEL: str
     
-    # ==========================================
-    # BASE DE DATOS (PostgreSQL)
-    # ==========================================
+    # --- Base de Datos ---
     DATABASE_URL: str = Field(alias="DATA_BASE_CONNECTION_STRING")
     
     @field_validator('DATABASE_URL', mode='before')
     @classmethod
     def convert_connection_string(cls, v: str) -> str:
-        """
-        Convierte connection string de formato ADO.NET a SQLAlchemy URI.
-        
-        Input:  Host=localhost;Port=5432;Database=mydb;Username=user;Password=pass
-        Output: postgresql+asyncpg://user:pass@localhost:5432/mydb
-        """
+        """Convierte ADO.NET → SQLAlchemy URI si es necesario."""
         if v.startswith('postgresql'):
-            return v  # Ya está en formato correcto
-        
-        # Parsear formato ADO.NET
+            return v
         params = {}
         for part in v.split(';'):
             if '=' in part:
                 key, value = part.split('=', 1)
                 params[key.strip().lower()] = value.strip()
-        
         host = params.get('host', 'localhost')
         port = params.get('port', '5432')
         database = params.get('database', 'postgres')
         username = params.get('username', 'postgres')
         password = params.get('password', '')
-        
         return f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}"
     
-    # ==========================================
-    # REDIS (Memoria de conversaciones)
-    # ==========================================
+    # --- Redis ---
     REDIS_URL: str
-    # Timeouts para evitar "cuelgues" al conectar
-    REDIS_CONNECT_TIMEOUT_SECONDS: float = 3.0
-    REDIS_SOCKET_TIMEOUT_SECONDS: float = 3.0
-    # Si es False, la app puede iniciar sin Redis (modo degradado)
-    REDIS_REQUIRED: bool = True
+    REDIS_CONNECT_TIMEOUT_SECONDS: float
+    REDIS_SOCKET_TIMEOUT_SECONDS: float
+    REDIS_REQUIRED: bool
     
-    # ==========================================
-    # WHATSAPP (API Oficial de Meta)
-    # ==========================================
-    # Token de acceso permanente de Meta
-    WHATSAPP_ACCESS_TOKEN: str = Field(alias="WHATSAPP_TOKEN")
-    
-    # ID del número de teléfono de WhatsApp Business
-    WHATSAPP_PHONE_NUMBER_ID: str = Field(alias="WHATSAPP_PHONE_ID")
-    
-    # Token de verificación para el webhook
+    # --- WhatsApp (solo webhook global) ---
     WHATSAPP_VERIFY_TOKEN: str
+    WHATSAPP_APP_SECRET: str | None = None
     
-    # Versión de la API de Meta
-    WHATSAPP_API_VERSION: str = "v21.0"
-    
-    # ==========================================
-    # LLM (Google Gemini)
-    # ==========================================
+    # --- Gemini (LLM) ---
     GOOGLE_API_KEY: str = Field(alias="GEMINI_API_KEY")
+    GEMINI_MODEL: str
     
-    # Modelo de Gemini a usar
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # --- Google Calendar ---
+    GOOGLE_CREDENTIALS_PATH: str
     
-    # ==========================================
-    # GOOGLE CALENDAR
-    # ==========================================
-    GOOGLE_CREDENTIALS_PATH: str = "credentials/google_calendar_service.json"
-    GOOGLE_CALENDAR_ID: str | None = None
-    
-    # ==========================================
-    # EMAIL (SMTP) - Opcional
-    # ==========================================
-    SMTP_HOST: str | None = "smtp.gmail.com"
-    SMTP_PORT: int = 587
+    # --- Email (SMTP) ---
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int | None = None
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     EMAIL_FROM: str | None = None
     
-    # ==========================================
-    # SUPABASE S3 (Catálogo en PDF - Storage S3-compatible)
-    # ==========================================
+    # --- Supabase S3 (catálogos PDF) ---
     SUPABASE_S3_ACCESS_KEY_ID: str | None = None
     SUPABASE_S3_SECRET_ACCESS_KEY: str | None = None
-    # Endpoint S3 de Supabase (ej. https://xxx.storage.supabase.co/storage/v1/s3)
     SUPABASE_S3_ENDPOINT: str | None = None
-    SUPABASE_S3_REGION: str = "us-east-2"
-    # Nombre del bucket donde se suben los PDFs de catálogo (panel admin)
-    SUPABASE_BUCKET_CATALOGS: str = "catalogs"
-    # TTL en segundos del texto extraído del PDF en Redis (7 días)
-    CATALOG_PDF_CACHE_TTL_SECONDS: int = 604800
-
-    # ==========================================
-    # CONFIGURACIÓN DEL BOT
-    # ==========================================
-    # Tiempo de expiración de sesión en Redis (segundos)
-    SESSION_EXPIRE_SECONDS: int = 3600  # 1 hora
+    SUPABASE_S3_REGION: str | None = None
+    SUPABASE_BUCKET_CATALOGS: str | None = None
+    CATALOG_PDF_CACHE_TTL_SECONDS: int
     
-    # Máximo de mensajes en contexto
-    MAX_CONTEXT_MESSAGES: int = 20
+    # --- Bot ---
+    SESSION_EXPIRE_SECONDS: int
+    MAX_CONTEXT_MESSAGES: int
+    
+    # --- Seguridad ---
+    ADMIN_API_KEY: str | None = None
+    ALLOWED_ORIGINS: str
 
     model_config = ConfigDict(
         env_file=".env",
         extra="ignore",
         populate_by_name=True
     )
-
-    @property
-    def whatsapp_api_url(self) -> str:
-        """URL base de la API de WhatsApp"""
-        return f"https://graph.facebook.com/{self.WHATSAPP_API_VERSION}/{self.WHATSAPP_PHONE_NUMBER_ID}"
 
 
 @lru_cache

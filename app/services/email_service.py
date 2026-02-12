@@ -2,6 +2,7 @@
 Servicio de Email para enviar confirmaciones de citas/reservaciones.
 Usa SMTP o servicios como SendGrid/Resend.
 """
+import asyncio
 import logging
 import smtplib
 from email.mime.text import MIMEText
@@ -48,6 +49,13 @@ class EmailService:
         
         if not self.enabled:
             logger.warning("Email service disabled - SMTP credentials not configured")
+    
+    def _send_smtp(self, msg: MIMEMultipart):
+        """Envía un email de forma síncrona (solo para uso con asyncio.to_thread)."""
+        with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+            server.starttls()
+            server.login(self.smtp_user, self.smtp_password)
+            server.send_message(msg)
     
     async def send_confirmation_email(
         self,
@@ -108,11 +116,8 @@ class EmailService:
             # Agregar contenido HTML
             msg.attach(MIMEText(html_content, 'html', 'utf-8'))
             
-            # Enviar
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg)
+            # Enviar (en thread para no bloquear el event loop)
+            await asyncio.to_thread(self._send_smtp, msg)
             
             logger.debug(f"Email de confirmación enviado a {to_email}")
             return True
@@ -193,10 +198,7 @@ class EmailService:
             msg['To'] = to_email
             msg.attach(MIMEText(html, 'html', 'utf-8'))
             
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg)
+            await asyncio.to_thread(self._send_smtp, msg)
             
             logger.debug(f"Email de recordatorio enviado a {to_email}")
             return True

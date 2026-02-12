@@ -1,5 +1,6 @@
 from google import genai
 from google.genai import types
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -19,7 +20,7 @@ class GeminiService:
         self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
         self.model = settings.GEMINI_MODEL
     
-    def build_system_prompt(
+    async def build_system_prompt(
         self,
         client: Client,
         customer: Customer | None = None
@@ -83,20 +84,14 @@ REGLAS FUNDAMENTALES DE COMPORTAMIENTO
    - DESPUÉS de ejecutar, confirma: "✅ [Acción] completada. Te enviamos la confirmación"
    - Si no tiene correo pero sí teléfono, está bien - guárdalo para contactar
 
-6. ⚠️ CONFIRMACIÓN DE CITAS (MUY IMPORTANTE - PRIORIDAD ALTA):
-   - REVISA SIEMPRE el historial de conversación ANTES de responder
-   - Si en el historial reciente (últimos 2-3 mensajes) hay un mensaje tuyo que contiene:
-     * "Confirmación de Cita"
-     * "¿Podrás asistir?"
-     * "Responde *SÍ* para confirmar"
-     * "Responde *NO* para cancelar"
-     * "Responde *CAMBIAR* para reagendar"
-   - Y el usuario responde con: "Sí", "Si", "SÍ", "si", "confirmo", "sí confirmo", "si la confirmo", "claro", "por supuesto", "ok", "está bien", "perfecto", "de acuerdo"
-   - ENTONCES el usuario está CONFIRMANDO su asistencia a la cita mencionada en ese mensaje
-   - ACCIÓN INMEDIATA: USA la herramienta confirmar_cita SIN PREGUNTAR NADA MÁS
-   - NO digas "no estoy segura de qué te refieres" - el contexto está en el historial
-   - Si el usuario responde "NO", "no", "cancelar", "no puedo", "no podré" → usa cancelar_cita (pero primero pregunta el email)
-   - Si el usuario responde "CAMBIAR", "cambiar", "reagendar", "modificar", "otra fecha" → usa modificar_cita (pero primero pregunta el email)
+6. ⚠️ REGLAS DE CITAS (MUY IMPORTANTE):
+   A) CITA NUEVA - Cuando estás agendando:
+      - Cuando tengas todos los datos, LLAMA crear_cita INMEDIATAMENTE.
+      - NUNCA digas "tu cita ha sido agendada" sin haber ejecutado crear_cita.
+      - Si el usuario dice "sí" para confirmar datos que recopilaste → crear_cita, NO confirmar_cita.
+   B) RECORDATORIO - Citas existentes:
+      - Si hay un RECORDATORIO automático con "¿Podrás asistir?" y el usuario dice "Sí" → confirmar_cita
+      - Si dice "NO" → cancelar_cita | Si dice "CAMBIAR" → modificar_cita
 
 ═══════════════════════════════════════════════════
 INFORMACIÓN DEL NEGOCIO
@@ -214,6 +209,12 @@ Profesionales disponibles:
                     "Consulta la información de cada profesional arriba antes de ofrecer disponibilidad. "
                     "Si el cliente pide un día que el profesional NO trabaja, indícale los días correctos de ese profesional."
                 )
+                innate_rules.append(
+                    "🔓 FORZAR HORARIO: Si las instrucciones del negocio (system prompt) indican que un profesional "
+                    "trabaja en días u horarios DIFERENTES a los configurados arriba, USA forzar_horario=true "
+                    "en buscar_disponibilidad, crear_cita y modificar_cita para permitir agendar fuera del horario configurado. "
+                    "Las instrucciones del negocio tienen PRIORIDAD sobre la configuración de días/horarios."
+                )
         
         # Requisito de seguro médico
         if config.get('requires_insurance'):
@@ -261,19 +262,29 @@ Teléfono: {customer.phone_number}
         # Si el negocio tiene catalog_source=pdf, agregar instrucciones
         # independientemente del tipo de negocio (salon, clinic, store, etc.)
         if config.get('catalog_source') == 'pdf':
+            # Cargar texto del PDF y ponerlo directo en el system prompt
+            from app.services.catalog_pdf import get_catalog_text
+            pdf_text = await get_catalog_text(client.id, config)
             base_system += """
 ═══════════════════════════════════════════════════
 CATÁLOGO EN PDF (ACTIVADO)
 ═══════════════════════════════════════════════════
-⚠️ El catálogo/listado de servicios/productos del negocio está en un documento PDF.
-
-CÓMO RESPONDER PREGUNTAS SOBRE PRODUCTOS/SERVICIOS:
-- Cuando el usuario pregunte por productos, precios, servicios, qué tienen, cuánto cuesta algo, etc.
-- USA la herramienta ver_servicios con el parámetro "pregunta" = exactamente lo que el usuario preguntó
-- Ejemplos: "¿Qué servicios ofrecen?", "precios de X", "¿cuánto cuesta Y?", "¿tienen Z?"
-- La IA responderá basándose en el contenido del PDF
-
-NO inventes precios ni servicios. Si el PDF no tiene la información, dilo amablemente.
+🚨 REGLA CRÍTICA DE PRECIOS Y SERVICIOS:
+- El catálogo COMPLETO del negocio con TODOS los servicios y precios está incluido abajo.
+- Cuando el cliente pregunte por servicios, precios, qué ofrecen, etc: RESPONDE DIRECTAMENTE usando los datos del catálogo de abajo.
+- LISTA TODOS los servicios disponibles, no solo uno.
+- SIEMPRE incluye los precios EXACTOS como aparecen en el catálogo.
+- NUNCA cites precios de memoria ni del historial de conversación.
+- Si necesitas calcular un total, suma los precios EXACTOS del catálogo.
+- JAMÁS inventes, redondees o aproximes un precio.
+- Solo usa ver_servicios si necesitas recargar el catálogo por alguna razón.
+"""
+            if pdf_text:
+                # Truncar si es muy largo pero incluir siempre
+                catalog_for_prompt = pdf_text[:50000] if len(pdf_text) > 50000 else pdf_text
+                base_system += f"""
+📋 CATÁLOGO COMPLETO (datos EXACTOS del PDF):
+{catalog_for_prompt}
 """
 
 
@@ -559,7 +570,7 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 logger.error("Customer inválido en chat_with_tools")
                 return "No pude identificar tu información. Por favor intenta de nuevo."
             
-            system_prompt = self.build_system_prompt(client, customer)
+            system_prompt = await self.build_system_prompt(client, customer)
             tool_executor = ToolExecutor(client, customer)
             
             # Construir contenido del chat
@@ -591,24 +602,53 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
             )
             
             # Generar respuesta con tools Y system_instruction
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.7,
-                    top_p=0.95,
-                    max_output_tokens=1024,
-                    tools=TOOL_DEFINITIONS,
-                )
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.5,
+                        top_p=0.95,
+                        max_output_tokens=1024,
+                        tools=TOOL_DEFINITIONS,
+                    )
+                ),
+                timeout=30.0
             )
             
-            # Procesar respuesta
+            # Procesar respuesta (con retry si Gemini devuelve vacío)
             final_response = await self._process_response(
                 response, 
                 contents, 
                 tool_executor
             )
+            
+            # Si Gemini devolvió respuesta vacía, reintentar hasta 2 veces
+            empty_msg = "Lo siento, no pude procesar tu solicitud"
+            retries = 0
+            while final_response.startswith(empty_msg) and retries < 2:
+                retries += 1
+                logger.info(f"Reintentando Gemini (intento {retries}/2) por respuesta vacía...")
+                retry_response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            temperature=0.5 + (retries * 0.1),  # Subir temp ligeramente en retry
+                            top_p=0.95,
+                            max_output_tokens=1024,
+                            tools=TOOL_DEFINITIONS,
+                        )
+                    ),
+                    timeout=30.0
+                )
+                final_response = await self._process_response(
+                    retry_response,
+                    contents,
+                    tool_executor
+                )
             
             return self._clean_response(final_response)
             
@@ -682,14 +722,17 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 
                 # Continuar la conversación con el resultado
                 from app.agents.tools.definitions import TOOL_DEFINITIONS
-                new_response = await self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=1024,
-                        tools=TOOL_DEFINITIONS,
-                    )
+                new_response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.model,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            temperature=0.5,
+                            max_output_tokens=1024,
+                            tools=TOOL_DEFINITIONS,
+                        )
+                    ),
+                    timeout=30.0
                 )
                 
                 # Procesar recursivamente
@@ -734,13 +777,16 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
         try:
             full_prompt = f"{system_prompt}\n\nUsuario: {message}"
             
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=1024,
-                )
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.5,
+                        max_output_tokens=1024,
+                    )
+                ),
+                timeout=30.0
             )
             
             return self._clean_response(response.text)
@@ -764,22 +810,28 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 "Responde en español, de forma breve y útil para WhatsApp. "
                 "Si la información no está en el contexto, dilo amablemente y ofrece alternativas (horarios, contacto). "
                 "Para listas de productos o precios usa *negrita* para nombres y montos. "
-                "No inventes datos que no aparezcan en el contexto."
+                "🚨 REGLA CRÍTICA: COPIA los precios EXACTOS del contexto, carácter por carácter. "
+                "NUNCA redondees, inventes, aproximes ni modifiques un precio. "
+                "Si un precio dice 2,950 $RD, debes decir exactamente 2,950 $RD. "
+                "Si necesitas sumar precios, usa SOLO los valores exactos del contexto."
             )
             user_content = f"Contexto (catálogo del negocio):\n\n{context[:300000]}\n\n---\nPregunta del cliente: {question}"
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=user_content)]
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text=user_content)]
+                        )
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=0.1,
+                        max_output_tokens=1024,
                     )
-                ],
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    temperature=0.3,
-                    max_output_tokens=1024,
-                )
+                ),
+                timeout=30.0
             )
             if not response.text or not response.text.strip():
                 return "No pude generar una respuesta del catálogo. ¿Quieres que te cuente horarios o que un asesor te contacte?"
@@ -800,30 +852,33 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
             logger.warning("PDF demasiado grande para extracción con Gemini (>15MB)")
             return None
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_bytes(
-                                data=pdf_bytes,
-                                mime_type="application/pdf",
-                            ),
-                            types.Part.from_text(
-                                text=(
-                                    "Extrae TODO el texto de este documento PDF de forma literal. "
-                                    "Preserva la estructura: títulos, listas, precios, nombres de productos/servicios. "
-                                    "Responde ÚNICAMENTE con el texto extraído, sin comentarios ni explicaciones."
-                                )
-                            ),
-                        ],
+            response = await asyncio.wait_for(
+                self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_bytes(
+                                    data=pdf_bytes,
+                                    mime_type="application/pdf",
+                                ),
+                                types.Part.from_text(
+                                    text=(
+                                        "Extrae TODO el texto de este documento PDF de forma literal. "
+                                        "Preserva la estructura: títulos, listas, precios, nombres de productos/servicios. "
+                                        "Responde ÚNICAMENTE con el texto extraído, sin comentarios ni explicaciones."
+                                    )
+                                ),
+                            ],
+                        )
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=8192,
                     )
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=8192,
-                )
+                ),
+                timeout=60.0  # PDFs pueden tardar más
             )
             if not response.text or not response.text.strip():
                 return None
@@ -847,7 +902,7 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
             # Fallback sin tools
             return await self.chat_simple(
                 message, 
-                self.build_system_prompt(client, customer)
+                await self.build_system_prompt(client, customer)
             )
     
     def _clean_response(self, text: str) -> str:

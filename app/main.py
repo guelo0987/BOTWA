@@ -83,8 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info("⏰ Iniciando scheduler automático...")
     await start_scheduler()
     
-    logger.info("🤖 Bot WhatsApp listo!")
-    logger.info(f"📱 Phone Number ID: {settings.WHATSAPP_PHONE_NUMBER_ID}")
+    logger.info("🤖 Bot WhatsApp listo! (multi-tenant)")
     
     yield
     
@@ -93,6 +92,10 @@ async def lifespan(app: FastAPI):
     
     # Detener scheduler automático
     await stop_scheduler()
+    
+    # Cerrar cliente HTTP de WhatsApp
+    from app.services.whatsapp import whatsapp_service
+    await whatsapp_service.close()
     
     await close_redis()
     logger.info("Conexiones cerradas")
@@ -107,9 +110,10 @@ app = FastAPI(
 )
 
 # Configurar CORS
+_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especificar dominios
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

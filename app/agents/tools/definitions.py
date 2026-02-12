@@ -89,6 +89,10 @@ TOOL_DEFINITIONS = [
                             type=types.Type.STRING,
                             description="Nombre del servicio para calcular duración"
                         ),
+                        "forzar_horario": types.Schema(
+                            type=types.Type.BOOLEAN,
+                            description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados (ej: profesional que trabaja domingos según instrucciones especiales)"
+                        ),
                     },
                     required=["fecha"]
                 )
@@ -141,6 +145,10 @@ TOOL_DEFINITIONS = [
                             type=types.Type.STRING,
                             description="Detalles que definen precio o servicio: tipo de vehículo (sedan, SUV, camioneta), tamaño, variante del servicio, etc. Todo lo que el negocio use para diferenciar precios o anotar en la cita."
                         ),
+                        "forzar_horario": types.Schema(
+                            type=types.Type.BOOLEAN,
+                            description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados (ej: profesional que trabaja domingos según instrucciones especiales)"
+                        ),
                     },
                     required=["fecha", "hora", "servicio"]
                 )
@@ -166,10 +174,13 @@ TOOL_DEFINITIONS = [
             ),
             types.FunctionDeclaration(
                 name="confirmar_cita",
-                description="""Confirma que el usuario asistirá a su cita próxima.
-                Usa cuando el usuario responda "Sí", "Si", "SÍ", "confirmo", "sí confirmo", etc. 
-                a un mensaje de confirmación que acabas de enviar o que está en el historial reciente.
-                Busca la cita más próxima del usuario y confirma su asistencia.""",
+                description="""Confirma la ASISTENCIA del usuario a una cita que YA EXISTE en el sistema.
+                SOLO usar cuando el usuario pregunta sobre una cita existente, por ejemplo: 
+                "¿a qué hora es mi cita?", "confirmo mi asistencia", "¿tengo cita?".
+                
+                ⚠️ NO usar este tool cuando estás en el proceso de CREAR una cita nueva.
+                Si acabas de preguntar "¿Te gustaría confirmar esta cita?" o "¿Es correcto?" 
+                y el usuario dice "sí"/"confirmo", debes usar crear_cita para CREAR la cita, NO este tool.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={},
@@ -237,6 +248,10 @@ TOOL_DEFINITIONS = [
                         "email": types.Schema(
                             type=types.Type.STRING,
                             description="Correo electrónico para enviar confirmación de modificación"
+                        ),
+                        "forzar_horario": types.Schema(
+                            type=types.Type.BOOLEAN,
+                            description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados"
                         ),
                     },
                     required=["fecha_antigua", "hora_antigua", "fecha_nueva", "hora_nueva"]
@@ -349,20 +364,19 @@ class ToolExecutor:
         pregunta = (args.get("pregunta") or "").strip()
         currency = self.config.get("currency", "$")
         
-        # CASO: Catálogo en PDF (Supabase bucket) — consulta vía IA sobre el documento
+        # CASO: Catálogo en PDF (Supabase bucket) — devolver texto directo
+        # El Gemini principal ya tiene el catálogo en su system prompt.
+        # Devolvemos el texto crudo para que el Gemini principal lo formatee.
         if self.config.get("catalog_source") == "pdf" and (
             self.config.get("catalog_pdf_key") or self.config.get("catalog_pdf_url")
         ):
             from app.services.catalog_pdf import get_catalog_text
-            from app.services.gemini import gemini_service
             catalog_text = await get_catalog_text(self.client.id, self.config)
             if not catalog_text:
                 logger.warning("ver_servicios PDF: no se pudo obtener texto para client %s", self.client.id)
                 return "No pude cargar el catálogo en este momento. ¿Te gustaría que te cuente horarios de atención o que un asesor te contacte?"
-            question = pregunta or categoria or "Lista todos los productos, servicios, precios y descripciones del catálogo de forma clara y útil para el cliente."
-            if categoria and not pregunta:
-                question = f"Información sobre categoría o tema: {categoria}. Responde con productos/precios relevantes del catálogo."
-            return await gemini_service.answer_from_context(catalog_text, question)
+            # Devolver el texto del PDF directamente — el Gemini principal lo formateará
+            return f"CATÁLOGO COMPLETO DEL NEGOCIO (datos exactos del PDF):\n\n{catalog_text[:50000]}"
         
         # PRIORIZAR catálogo sobre servicios genéricos
         # Si existe catalog con productos, usar eso primero
@@ -517,7 +531,7 @@ class ToolExecutor:
                     # Listar profesionales disponibles
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"No encontré a '{profesional_id}'. Los profesionales disponibles son: {profs_list}"
-                calendar_id = prof.get("calendar_id")
+                calendar_id = prof.get("calendar_id") or calendar_id
                 duration = prof.get("slot_duration", 30)
                 working_hours = prof.get("business_hours", working_hours)
                 working_days = prof.get("working_days", working_days)
@@ -533,12 +547,14 @@ class ToolExecutor:
                 duration = self.config.get("delivery_duration", 60)
                 working_hours = self.config.get("delivery_hours", working_hours)
             
-            # Verificar día de la semana
-            dia_semana = fecha.isoweekday()
-            if dia_semana not in working_days:
-                dias = {1:"lunes", 2:"martes", 3:"miércoles", 4:"jueves", 5:"viernes", 6:"sábado", 7:"domingo"}
-                dias_trabajo = ", ".join([dias[d] for d in working_days])
-                return f"No trabajamos el {dias.get(dia_semana)}. Días disponibles: {dias_trabajo}"
+            # Verificar día de la semana (a menos que forzar_horario=true)
+            forzar = args.get("forzar_horario", False)
+            if not forzar:
+                dia_semana = fecha.isoweekday()
+                if dia_semana not in working_days:
+                    dias = {1:"lunes", 2:"martes", 3:"miércoles", 4:"jueves", 5:"viernes", 6:"sábado", 7:"domingo"}
+                    dias_trabajo = ", ".join([dias[d] for d in working_days])
+                    return f"No trabajamos el {dias.get(dia_semana)}. Días disponibles: {dias_trabajo}"
             
             if not calendar_id:
                 return "No hay calendario configurado para este servicio."
@@ -547,9 +563,11 @@ class ToolExecutor:
             from app.services.calendar import calendar_service
             
             # Obtener slots
+            # Si forzar_horario, usar ventana amplia para mostrar slots fuera de horario normal
+            effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
             config_for_calendar = {
                 **self.config,
-                "business_hours": working_hours,
+                "business_hours": effective_hours,
                 "slot_duration": duration
             }
             
@@ -627,33 +645,10 @@ class ToolExecutor:
                 return "Esa hora ya pasó. ¿Me puedes dar otro horario?"
             
             # ==========================================
-            # VALIDAR HORARIO DE TRABAJO
+            # DETERMINAR CONFIGURACIÓN (global o por profesional)
             # ==========================================
             working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
             working_days = self.config.get("working_days", [1, 2, 3, 4, 5])
-            # Tienda con delivery: validar y usar horario de entregas
-            if self.business_type == "store":
-                working_hours = self.config.get("delivery_hours", working_hours)
-            
-            # Validar día de la semana
-            dia_semana = fecha.isoweekday()
-            if dia_semana not in working_days:
-                dias_nombres = {1: "lunes", 2: "martes", 3: "miércoles", 4: "jueves", 5: "viernes", 6: "sábado", 7: "domingo"}
-                dias_trabajo = ", ".join([dias_nombres[d] for d in working_days])
-                return f"Ese día no trabajamos. Nuestros días de atención son: {dias_trabajo}. ¿Qué otro día te funciona?"
-            
-            # Validar hora dentro del horario
-            start_hour, start_min = map(int, working_hours['start'].split(':'))
-            end_hour, end_min = map(int, working_hours['end'].split(':'))
-            
-            hora_cita = fecha.hour * 60 + fecha.minute  # Convertir a minutos
-            hora_inicio = start_hour * 60 + start_min
-            hora_fin = end_hour * 60 + end_min
-            
-            if hora_cita < hora_inicio or hora_cita > hora_fin:
-                return f"Esa hora está fuera de nuestro horario de atención ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])}). ¿Te funciona algún horario dentro de ese rango?"
-            
-            # Determinar calendario y duración
             calendar_id = self.calendar_id
             duration = self.config.get("slot_duration", 30)
             titulo_prefix = ""
@@ -662,18 +657,25 @@ class ToolExecutor:
             profesional_nombre = None
             precio_servicio = None
             
-            # CASO: Profesional específico (Clínica o Salón)
+            # Tienda con delivery: usar horario de entregas
+            if self.business_type == "store":
+                working_hours = self.config.get("delivery_hours", working_hours)
+            
+            # CASO: Profesional específico — override con SU horario y días
             prof = None
             if profesional_id and self.config.get("professionals"):
                 prof = self._find_professional(profesional_id)
                 if prof:
-                    if prof.get("calendar_id"):
-                        calendar_id = prof["calendar_id"]
+                    calendar_id = prof.get("calendar_id") or calendar_id
+                    if prof.get("business_hours"):
+                        working_hours = prof["business_hours"]
+                    if prof.get("working_days"):
+                        working_days = prof["working_days"]
+                    if prof.get("slot_duration"):
+                        duration = prof["slot_duration"]
                     titulo_prefix = f"{prof['name']} - "
                     profesional_nombre = prof['name']
                     descripcion_extra = f"\nProfesional: {prof['name']}"
-                    if prof.get("slot_duration"):
-                        duration = prof["slot_duration"]
                 else:
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"No encontré a '{profesional_id}'. Los profesionales disponibles son: {profs_list}"
@@ -705,24 +707,44 @@ class ToolExecutor:
             if detalles:
                 descripcion_extra += f"\n📋 Detalles: {detalles}"
             
+            # Validar horario (a menos que forzar_horario=true)
+            forzar = args.get("forzar_horario", False)
+            if not forzar:
+                dia_semana = fecha.isoweekday()
+                if dia_semana not in working_days:
+                    dias_nombres = {1: "lunes", 2: "martes", 3: "miércoles", 4: "jueves", 5: "viernes", 6: "sábado", 7: "domingo"}
+                    dias_trabajo = ", ".join([dias_nombres[d] for d in working_days])
+                    if profesional_nombre:
+                        return f"{profesional_nombre} no trabaja el {dias_nombres.get(dia_semana)}. Sus días disponibles son: {dias_trabajo}. ¿Qué otro día te funciona?"
+                    return f"Ese día no trabajamos. Nuestros días de atención son: {dias_trabajo}. ¿Qué otro día te funciona?"
+                
+                # Validar hora dentro del horario
+                start_hour, start_min = map(int, working_hours['start'].split(':'))
+                end_hour, end_min = map(int, working_hours['end'].split(':'))
+                hora_cita = fecha.hour * 60 + fecha.minute
+                hora_inicio = start_hour * 60 + start_min
+                hora_fin = end_hour * 60 + end_min
+                
+                if hora_cita < hora_inicio or hora_cita > hora_fin:
+                    return f"Esa hora está fuera de nuestro horario de atención ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])}). ¿Te funciona algún horario dentro de ese rango?"
+            
             # Guardar email del cliente si lo proporciona
             if email:
                 await client_service.update_customer_data(self.customer.id, {"email": email})
             
             # ==========================================
             # VERIFICAR DISPONIBILIDAD DEL SLOT ESPECÍFICO
-            # (Después de determinar calendario y working_hours del profesional)
             # ==========================================
             from app.services.calendar import calendar_service
             
-            # Actualizar working_hours si es un profesional con horario específico
-            if prof and prof.get("business_hours"):
-                working_hours = prof["business_hours"]
+            # working_hours ya tiene el override del profesional si aplica
             
             # Obtener configuración para el calendario específico
+            # Si forzar_horario, usar ventana amplia para permitir slots fuera de horario normal
+            effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
             config_for_calendar = {
                 **self.config,
-                "business_hours": working_hours,
+                "business_hours": effective_hours,
                 "slot_duration": duration
             }
             
@@ -741,10 +763,21 @@ class ToolExecutor:
             
             for slot in slots_disponibles:
                 slot_start = slot.get('start', '')
-                # Verificar si el horario solicitado coincide con el inicio de algún slot
-                if slot_start == hora_solicitada:
-                    slot_disponible = True
-                    break
+                slot_end = slot.get('end', '')
+                # Verificar si la hora solicitada cae dentro de algún slot disponible
+                # Solo validamos que el INICIO esté en un slot libre.
+                # Google Calendar se encarga de validar conflictos reales.
+                if slot_start and slot_end:
+                    s_h, s_m = map(int, slot_start.split(':'))
+                    e_h, e_m = map(int, slot_end.split(':'))
+                    r_h, r_m = map(int, hora_solicitada.split(':'))
+                    slot_start_min = s_h * 60 + s_m
+                    slot_end_min = e_h * 60 + e_m
+                    requested_min = r_h * 60 + r_m
+                    # La hora de inicio debe caer dentro de algún slot libre
+                    if requested_min >= slot_start_min and requested_min < slot_end_min:
+                        slot_disponible = True
+                        break
             
             if not slot_disponible:
                 # Formatear slots disponibles para mostrar al usuario
@@ -1093,24 +1126,37 @@ class ToolExecutor:
             if fecha_nueva < datetime.now(tz):
                 return "La nueva fecha ya pasó. ¿Me puedes dar otra fecha?"
             
-            # Validar horario de trabajo
+            # Validar horario (a menos que forzar_horario=true)
+            forzar = args.get("forzar_horario", False)
             working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
             working_days = self.config.get("working_days", [1, 2, 3, 4, 5])
             
-            dia_semana = fecha_nueva.isoweekday()
-            if dia_semana not in working_days:
-                dias_nombres = {1: "lunes", 2: "martes", 3: "miércoles", 4: "jueves", 5: "viernes", 6: "sábado", 7: "domingo"}
-                dias_trabajo = ", ".join([dias_nombres[d] for d in working_days])
-                return f"Ese día no trabajamos. Días disponibles: {dias_trabajo}"
+            # Override con datos del profesional si aplica
+            if profesional_id and self.config.get("professionals"):
+                prof = next((p for p in self.config["professionals"] 
+                            if profesional_id.lower() in p.get("name", "").lower()
+                            or profesional_id.lower() in p.get("id", "").lower()), None)
+                if prof:
+                    if prof.get("working_days"):
+                        working_days = prof["working_days"]
+                    if prof.get("business_hours"):
+                        working_hours = prof["business_hours"]
             
-            start_hour, start_min = map(int, working_hours['start'].split(':'))
-            end_hour, end_min = map(int, working_hours['end'].split(':'))
-            hora_cita = fecha_nueva.hour * 60 + fecha_nueva.minute
-            hora_inicio = start_hour * 60 + start_min
-            hora_fin = end_hour * 60 + end_min
-            
-            if hora_cita < hora_inicio or hora_cita > hora_fin:
-                return f"Esa hora está fuera del horario ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])})"
+            if not forzar:
+                dia_semana = fecha_nueva.isoweekday()
+                if dia_semana not in working_days:
+                    dias_nombres = {1: "lunes", 2: "martes", 3: "miércoles", 4: "jueves", 5: "viernes", 6: "sábado", 7: "domingo"}
+                    dias_trabajo = ", ".join([dias_nombres[d] for d in working_days])
+                    return f"Ese día no trabajamos. Días disponibles: {dias_trabajo}"
+                
+                start_hour, start_min = map(int, working_hours['start'].split(':'))
+                end_hour, end_min = map(int, working_hours['end'].split(':'))
+                hora_cita = fecha_nueva.hour * 60 + fecha_nueva.minute
+                hora_inicio = start_hour * 60 + start_min
+                hora_fin = end_hour * 60 + end_min
+                
+                if hora_cita < hora_inicio or hora_cita > hora_fin:
+                    return f"Esa hora está fuera del horario ({_format_time_ampm(working_hours['start'])} - {_format_time_ampm(working_hours['end'])})"
             
             # Buscar cita antigua
             async with AsyncSessionLocal() as session:
@@ -1187,9 +1233,19 @@ class ToolExecutor:
                 
                 for slot in slots_disponibles:
                     slot_start = slot.get('start', '')
-                    if slot_start == hora_solicitada:
-                        slot_disponible = True
-                        break
+                    slot_end = slot.get('end', '')
+                    # Verificar si la hora solicitada cae dentro de algún slot libre
+                    # Google Calendar se encarga de validar conflictos reales
+                    if slot_start and slot_end:
+                        s_h, s_m = map(int, slot_start.split(':'))
+                        e_h, e_m = map(int, slot_end.split(':'))
+                        r_h, r_m = map(int, hora_solicitada.split(':'))
+                        slot_start_min = s_h * 60 + s_m
+                        slot_end_min = e_h * 60 + e_m
+                        requested_min = r_h * 60 + r_m
+                        if requested_min >= slot_start_min and requested_min < slot_end_min:
+                            slot_disponible = True
+                            break
                 
                 if not slot_disponible:
                     # Formatear slots disponibles para mostrar al usuario
