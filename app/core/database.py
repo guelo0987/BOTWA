@@ -8,8 +8,8 @@ engine = create_async_engine(
     echo=settings.ENV_MODE == "dev",  # Log SQL solo en desarrollo
     future=True,
     pool_pre_ping=True,  # Verifica conexiones antes de usar
-    pool_size=10,
-    max_overflow=20
+    pool_size=3,
+    max_overflow=5
 )
 
 # Fábrica de sesiones asíncronas

@@ -14,35 +14,62 @@ from app.services.auto_scheduler import start_scheduler, stop_scheduler
 
 # Configurar logging
 import sys
+import json as _json
 from logging.handlers import RotatingFileHandler
 
-# Crear directorio de logs si no existe
 import os
-os.makedirs("logs", exist_ok=True)
 
-# Configurar logging a archivo Y consola
-log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-log_level = logging.DEBUG if settings.ENV_MODE == "dev" else logging.WARNING
+log_level = logging.DEBUG if settings.ENV_MODE == "dev" else logging.INFO
 
-# Handler para archivo (rotativo, máximo 10MB, 5 archivos de backup)
-file_handler = RotatingFileHandler(
-    "logs/app.log",
-    maxBytes=10*1024*1024,  # 10MB
-    backupCount=5
-)
-file_handler.setLevel(log_level)
-file_handler.setFormatter(logging.Formatter(log_format))
 
-# Handler para consola
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(log_level)
-console_handler.setFormatter(logging.Formatter(log_format))
+class CloudRunJsonFormatter(logging.Formatter):
+    """JSON formatter that maps to Cloud Logging severity levels."""
+    SEVERITY_MAP = {
+        logging.DEBUG: "DEBUG",
+        logging.INFO: "INFO",
+        logging.WARNING: "WARNING",
+        logging.ERROR: "ERROR",
+        logging.CRITICAL: "CRITICAL",
+    }
 
-# Configurar root logger
+    def format(self, record):
+        log_entry = {
+            "severity": self.SEVERITY_MAP.get(record.levelno, "DEFAULT"),
+            "message": record.getMessage(),
+            "logger": record.name,
+            "timestamp": self.formatTime(record, self.datefmt),
+        }
+        if record.exc_info and record.exc_info[0]:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return _json.dumps(log_entry, ensure_ascii=False)
+
+
+# Root logger
 root_logger = logging.getLogger()
 root_logger.setLevel(log_level)
-root_logger.addHandler(file_handler)
-root_logger.addHandler(console_handler)
+
+if settings.ENV_MODE == "dev":
+    # Dev: human-readable format + file handler
+    os.makedirs("logs", exist_ok=True)
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+    file_handler = RotatingFileHandler(
+        "logs/app.log", maxBytes=10*1024*1024, backupCount=5
+    )
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    root_logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    root_logger.addHandler(console_handler)
+else:
+    # Production: JSON to stdout only (Cloud Logging picks this up)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(CloudRunJsonFormatter())
+    root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
 

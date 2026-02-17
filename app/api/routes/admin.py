@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 async def verify_admin_key(x_admin_key: str | None = Header(None)):
     """
     Verifica la API key de admin.
-    Si ADMIN_API_KEY no está configurada, permite todo (modo desarrollo).
+    En modo dev sin ADMIN_API_KEY configurada, permite todo.
+    En producción, siempre requiere API key válida.
     """
     if not settings.ADMIN_API_KEY:
-        return  # Dev mode — sin protección
+        if settings.ENV_MODE == "dev":
+            return  # Dev mode — sin protección
+        raise HTTPException(status_code=403, detail="Forbidden: ADMIN_API_KEY not configured")
     if not x_admin_key or x_admin_key != settings.ADMIN_API_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: invalid or missing X-Admin-Key")
 

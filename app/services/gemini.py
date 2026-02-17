@@ -613,6 +613,16 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 timeout=30.0
             )
             
+            # Log token usage for cost monitoring
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                um = response.usage_metadata
+                logger.info(
+                    f"Gemini tokens — client:{client.id} "
+                    f"input:{getattr(um, 'prompt_token_count', '?')} "
+                    f"output:{getattr(um, 'candidates_token_count', '?')} "
+                    f"total:{getattr(um, 'total_token_count', '?')}"
+                )
+            
             # Procesar respuesta (con retry si Gemini devuelve vacío)
             final_response = await self._process_response(
                 response, 
@@ -623,9 +633,9 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
             # Si Gemini devolvió respuesta vacía, reintentar hasta 2 veces
             empty_msg = "Lo siento, no pude procesar tu solicitud"
             retries = 0
-            while final_response.startswith(empty_msg) and retries < 2:
+            while final_response.startswith(empty_msg) and retries < 1:
                 retries += 1
-                logger.info(f"Reintentando Gemini (intento {retries}/2) por respuesta vacía...")
+                logger.info(f"Reintentando Gemini (intento {retries}/1) por respuesta vacía...")
                 retry_response = await asyncio.wait_for(
                     self.client.aio.models.generate_content(
                         model=self.model,

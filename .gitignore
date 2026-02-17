@@ -1,17 +1,33 @@
 dump.rdb
 .DS_Store
+Thumbs.db
 *.pyc
+*.pyo
 __pycache__/
+*.egg-info/
 
+# Environment files (secrets)
 *.env
+!.env.example
 credentials/
 *venv/
+
+# Google credentials (sensitive)
+credentials.json
+*-credentials.json
+service-account*.json
 
 # Logs
 logs/
 *.log
 
+# Build artifacts
+dist/
+build/
+
 # IDEs
 .vscode/
 .idea/
 .cursor/
+*.swp
+*.swo

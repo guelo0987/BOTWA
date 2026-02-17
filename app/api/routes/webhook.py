@@ -129,6 +129,15 @@ async def receive_webhook(
                                         except Exception:
                                             pass
                                     continue
+                                
+                                # Per-tenant rate limit (100 msgs/min across all senders)
+                                tenant_rate_key = f"rate:tenant:{processed.phone_number_id}"
+                                tenant_count = await redis.incr(tenant_rate_key)
+                                if tenant_count == 1:
+                                    await redis.expire(tenant_rate_key, 60)
+                                if tenant_count > 100:
+                                    logger.warning(f"Tenant rate limit alcanzado para {processed.phone_number_id}")
+                                    continue
                             except Exception:
                                 pass  # Si Redis falla, no limitar
                             
