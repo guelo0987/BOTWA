@@ -16,19 +16,40 @@ class Settings(BaseSettings):
     @classmethod
     def convert_connection_string(cls, v: str) -> str:
         """Convierte ADO.NET → SQLAlchemy URI si es necesario."""
-        if v.startswith('postgresql'):
-            return v
-        params = {}
-        for part in v.split(';'):
-            if '=' in part:
-                key, value = part.split('=', 1)
-                params[key.strip().lower()] = value.strip()
-        host = params.get('host', 'localhost')
-        port = params.get('port', '5432')
-        database = params.get('database', 'postgres')
-        username = params.get('username', 'postgres')
-        password = params.get('password', '')
-        return f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}"
+        # Convertir esquema
+        if v.startswith('postgresql://'):
+            v = v.replace('postgresql://', 'postgresql+asyncpg://', 1)
+        elif not v.startswith('postgresql+asyncpg://'):
+            # Si no empieza con el esquema correcto, intentar parsear estilo ADO.NET (legacy logic)
+            params = {}
+            for part in v.split(';'):
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    params[key.strip().lower()] = value.strip()
+            host = params.get('host', 'localhost')
+            port = params.get('port', '5432')
+            database = params.get('database', 'postgres')
+            username = params.get('username', 'postgres')
+            password = params.get('password', '')
+            v = f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}"
+
+        # Limpiar parámetros de query que rompen asyncpg
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed = urlparse(v)
+        query_params = parse_qs(parsed.query)
+        
+        # asyncpg no soporta 'sslmode', 'channel_binding', ni 'pgbouncer' en kwargs
+        # Se deben manejar via connect_args o dejar que el driver negocie
+        for bad_param in ['sslmode', 'channel_binding', 'pgbouncer']:
+            if bad_param in query_params:
+                del query_params[bad_param]
+        
+        # Reconstruir URL
+        new_query = urlencode(query_params, doseq=True)
+        v = urlunparse(parsed._replace(query=new_query))
+        
+        return v
     
     # --- Redis ---
     REDIS_URL: str

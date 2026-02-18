@@ -389,7 +389,8 @@ async def handle_message(msg: ProcessedMessage):
         )
         
         # 8. Enviar respuesta
-        await whatsapp_service.send_text_message(
+        # 8. Enviar respuesta
+        result = await whatsapp_service.send_text_message(
             to=msg.phone_number,
             message=response_text,
             access_token=wa_token,
@@ -397,6 +398,12 @@ async def handle_message(msg: ProcessedMessage):
             api_version=wa_version,
             client_id=client.id,
         )
+        
+        # 8.5 Guardar message_id enviado para evitar auto-respuestas (echo)
+        if result and "messages" in result:
+            sent_msg_id = result["messages"][0].get("id")
+            if sent_msg_id:
+                await memory.save_sent_message_id(sent_msg_id)
         
         # 9. Guardar respuesta en memoria
         await memory.add_message("assistant", response_text)

@@ -9,7 +9,11 @@ engine = create_async_engine(
     future=True,
     pool_pre_ping=True,  # Verifica conexiones antes de usar
     pool_size=3,
-    max_overflow=5
+    max_overflow=5,
+    connect_args={
+        "statement_cache_size": 0,  # Importante para Neon/PgBouncer
+        "server_settings": {"jit": "off"}  # Optimización opcional
+    }
 )
 
 # Fábrica de sesiones asíncronas
