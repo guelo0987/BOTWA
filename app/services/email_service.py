@@ -64,22 +64,10 @@ class EmailService:
         business_type: str,
         customer_name: str,
         appointment_date: datetime,
-        appointment_details: dict
+        appointment_details: dict,
+        client_settings=None
     ) -> bool:
-        """
-        Envía email de confirmación de cita/reservación.
-        
-        Args:
-            to_email: Email del cliente
-            business_name: Nombre del negocio
-            business_type: Tipo (salon, clinic, store, restaurant)
-            customer_name: Nombre del cliente
-            appointment_date: Fecha y hora de la cita
-            appointment_details: Detalles adicionales
-        
-        Returns:
-            True si se envió correctamente
-        """
+       
         if not self.enabled:
             logger.info("Email disabled - skipping confirmation")
             return False
@@ -104,13 +92,17 @@ class EmailService:
                 business_name=business_name,
                 customer_name=customer_name,
                 fecha_formateada=fecha_formateada,
-                details=appointment_details
+                details=appointment_details,
+                client_settings=client_settings
             )
             
             # Crear mensaje
+            sender_display = business_name
+            if client_settings and getattr(client_settings, 'sender_name', None):
+                sender_display = client_settings.sender_name
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = f"{business_name} <{self.from_email}>"
+            msg['From'] = f"{sender_display} <{self.from_email}>"
             msg['To'] = to_email
             
             # Agregar contenido HTML
@@ -135,6 +127,7 @@ class EmailService:
         appointment_date: datetime,
         appointment_details: dict,
         hours_before: int = 24,
+        client_settings=None
     ) -> bool:
         """
         Envía email de recordatorio de cita (ej. 24h o 48h antes).
@@ -166,35 +159,54 @@ class EmailService:
             hora = appointment_date.strftime("%I:%M %p")
             fecha_formateada = f"{dia_semana} {dia} de {mes} de {año} a las {hora}"
             
+            # Preparar estilos personalizados
+            primary_color = getattr(client_settings, 'primary_color', None) or "#4facfe"
+            secondary_color = getattr(client_settings, 'secondary_color', None) or "#00f2fe"
+            logo_html = f'<img src="{client_settings.logo_url}" alt="Logo" style="max-height: 50px; margin-bottom: 10px;">' if client_settings and client_settings.logo_url else ''
+            footer_text = getattr(client_settings, 'footer_text', None) or business_name
+
             subject = f"Recordatorio de cita - {business_name}"
             if hours_before >= 48:
                 subject = f"Confirmación de cita - {business_name}"
             
+            # Chequear override de subject
+            templates = getattr(client_settings, 'templates', {}) or {}
+            custom_subject = templates.get('reminder', {}).get('subject')
+            if custom_subject:
+                subject = custom_subject.format(business_name=business_name, date=fecha_formateada, hours=hours_before)
+
             html = f"""
             <!DOCTYPE html>
             <html>
             <head><meta charset="UTF-8"></head>
             <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <div style="background: #f0f4f8; padding: 20px; border-radius: 8px;">
-                        <h2 style="margin-top: 0;">Recordatorio de cita</h2>
+                    <div style="background: linear-gradient(135deg, {primary_color} 0%, {secondary_color} 100%); padding: 20px; border-radius: 8px 8px 0 0; color: white; text-align: center;">
+                        {logo_html}
+                        <h2 style="margin-top: 0; margin-bottom: 5px;">Recordatorio de cita</h2>
+                        <p style="margin:0; opacity: 0.9;">{business_name}</p>
+                    </div>
+                    <div style="background: #f9f9f9; padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
                         <p>Hola <strong>{customer_name}</strong>,</p>
-                        <p>Te recordamos que tienes una cita programada en <strong>{business_name}</strong>:</p>
+                        <p>Te recordamos que tienes una cita programada:</p>
                         <p><strong>Fecha y hora:</strong> {fecha_formateada}</p>
                         <p><strong>Servicio:</strong> {appointment_details.get('servicio', 'Cita')}</p>
                         {f'<p><strong>Profesional:</strong> {appointment_details.get("profesional", "")}</p>' if appointment_details.get('profesional') else ''}
                         <p>Si necesitas cancelar o modificar, contáctanos por WhatsApp.</p>
                         <p>¡Te esperamos!</p>
                     </div>
-                    <p style="color: #888; font-size: 12px;">{business_name}</p>
+                    <p style="color: #888; font-size: 12px; text-align: center; margin-top: 20px;">{footer_text}</p>
                 </div>
             </body>
             </html>
             """
             
+            sender_display = business_name
+            if client_settings and getattr(client_settings, 'sender_name', None):
+                sender_display = client_settings.sender_name
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = f"{business_name} <{self.from_email}>"
+            msg['From'] = f"{sender_display} <{self.from_email}>"
             msg['To'] = to_email
             msg.attach(MIMEText(html, 'html', 'utf-8'))
             
@@ -212,7 +224,8 @@ class EmailService:
         business_name: str,
         customer_name: str,
         fecha_formateada: str,
-        details: dict
+        details: dict,
+        client_settings=None
     ) -> tuple[str, str]:
         """Genera el contenido del email según el tipo de negocio."""
         
@@ -220,342 +233,214 @@ class EmailService:
         is_cancelled = details.get("cancelado", False)
         is_modified = details.get("modificada", False)
         
-        if is_cancelled:
-            # Template de cancelación
-            subject = f"❌ Cancelación de Cita - {business_name}"
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1 style="margin:0;">❌ Cita Cancelada</h1>
-                        <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                    </div>
-                    <div class="content">
-                        <p>Estimado/a <strong>{customer_name}</strong>,</p>
-                        <p>Confirmamos que tu cita programada para el <strong>{fecha_formateada}</strong> ha sido cancelada.</p>
-                        <p>Si deseas reagendar, por favor contáctanos nuevamente.</p>
-                        <p style="text-align: center; margin-top: 30px;">
-                            <strong>¡Esperamos poder atenderte pronto!</strong>
-                        </p>
-                    </div>
-                    <div class="footer">
-                        <p>{business_name}</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-            return subject, html
+        # Preparar estilos personalizados
+        primary_color = getattr(client_settings, 'primary_color', None) or "#4A90D9"
+        secondary_color = getattr(client_settings, 'secondary_color', None) or "#357ABD"
+        footer_text = getattr(client_settings, 'footer_text', None) or business_name
         
-        if is_modified:
-            # Template de modificación (similar al de confirmación pero con nota de modificación)
-            if business_type == 'restaurant':
-                subject = f"🔄 Reservación Modificada - {business_name}"
-                html = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="UTF-8">
-                    <style>
-                        body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                        .details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                        .detail-row {{ display: flex; padding: 10px 0; border-bottom: 1px solid #eee; }}
-                        .label {{ font-weight: bold; width: 150px; color: #666; }}
-                        .value {{ color: #333; }}
-                        .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                        .notice {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }}
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="header">
-                            <h1 style="margin:0;">🔄 Reservación Modificada</h1>
-                            <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                        </div>
-                        <div class="content">
-                            <div class="notice">
-                                <strong>⚠️ Tu reservación ha sido modificada</strong>
-                            </div>
-                            <p>Estimado/a <strong>{customer_name}</strong>,</p>
-                            <p>Hemos actualizado los detalles de tu reservación:</p>
-                            
-                            <div class="details">
-                                <div class="detail-row">
-                                    <span class="label">📅 Nueva fecha y hora:</span>
-                                    <span class="value">{fecha_formateada}</span>
-                                </div>
-                                <div class="detail-row">
-                                    <span class="label">👥 Personas:</span>
-                                    <span class="value">{details.get('num_personas', 'No especificado')}</span>
-                                </div>
-                                <div class="detail-row">
-                                    <span class="label">🪑 Área:</span>
-                                    <span class="value">{details.get('area', 'Por asignar')}</span>
-                                </div>
-                            </div>
-                            
-                            <p><strong>📍 Notas importantes:</strong></p>
-                            <ul>
-                                <li>Por favor llega 10 minutos antes de tu nueva hora</li>
-                                <li>La reservación se mantendrá por 15 minutos después de la hora programada</li>
-                            </ul>
-                            
-                            <p style="text-align: center; margin-top: 30px;">
-                                <strong>¡Será un placer atenderle!</strong> 🥂
+        # Logo HTML — prominente en el header
+        logo_url = getattr(client_settings, 'logo_url', None) if client_settings else None
+        logo_html = f'<img src="{logo_url}" alt="{business_name}" style="max-height:70px; max-width:200px; margin-bottom:12px; display:block;">' if logo_url else ''
+        
+        # Override de templates
+        templates = getattr(client_settings, 'templates', {}) or {}
+        
+        # ==========================================
+        # FUNCIÓN HELPER: Genera una fila de detalle
+        # ==========================================
+        def _detail_row(emoji, label, value):
+            if not value:
+                return ""
+            return f'''
+            <tr>
+                <td style="padding:10px 16px; border-bottom:1px solid #f0f0f0;">
+                    <span style="font-size:16px;">{emoji}</span>
+                    <span style="color:#888; font-size:13px; margin-left:4px;">{label}</span><br>
+                    <span style="color:#333; font-size:15px; font-weight:600; margin-left:24px;">{value}</span>
+                </td>
+            </tr>'''
+
+        # ==========================================
+        # FUNCIÓN HELPER: Genera el HTML completo
+        # ==========================================
+        def _build_email(title_emoji, title_text, subject, detail_rows_html, extra_content="", notice_html=""):
+            return subject, f'''<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{subject}</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f7; font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif; -webkit-font-smoothing:antialiased;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f4f4f7;">
+        <tr>
+            <td align="center" style="padding:24px 16px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                    
+                    <!-- HEADER -->
+                    <tr>
+                        <td style="background:linear-gradient(135deg, {primary_color} 0%, {secondary_color} 100%); padding:32px 24px; text-align:center;">
+                            {logo_html}
+                            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:700; letter-spacing:-0.3px;">
+                                {title_emoji} {title_text}
+                            </h1>
+                            <p style="margin:6px 0 0 0; color:rgba(255,255,255,0.85); font-size:14px;">{business_name}</p>
+                        </td>
+                    </tr>
+                    
+                    <!-- BODY -->
+                    <tr>
+                        <td style="padding:28px 24px 12px 24px;">
+                            {notice_html}
+                            <p style="margin:0 0 16px 0; color:#333; font-size:15px; line-height:1.6;">
+                                Estimado/a <strong>{customer_name}</strong>,
                             </p>
-                        </div>
-                        <div class="footer">
-                            <p>{business_name}</p>
-                        </div>
-                    </div>
-                </body>
-                </html>
-                """
-                return subject, html
+                            {extra_content}
+                        </td>
+                    </tr>
+                    
+                    <!-- DETALLES -->
+                    <tr>
+                        <td style="padding:0 24px 24px 24px;">
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#fafbfc; border-radius:8px; border:1px solid #eef0f2;">
+                                {detail_rows_html}
+                            </table>
+                        </td>
+                    </tr>
+                    
+                    <!-- NOTAS/CTA -->
+                    <tr>
+                        <td style="padding:0 24px 28px 24px; text-align:center;">
+                            <p style="margin:0; color:#888; font-size:13px; line-height:1.5;">
+                                Si necesitas cancelar o modificar, contáctanos por WhatsApp.
+                            </p>
+                        </td>
+                    </tr>
+                    
+                    <!-- FOOTER -->
+                    <tr>
+                        <td style="border-top:1px solid #eef0f2; padding:16px 24px; text-align:center;">
+                            <p style="margin:0; color:#aaa; font-size:12px;">{footer_text}</p>
+                        </td>
+                    </tr>
+                    
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>'''
+
+        # ==========================================
+        # CANCELACIÓN
+        # ==========================================
+        if is_cancelled:
+            custom_subject = templates.get('cancellation', {}).get('subject')
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else f"❌ Cita Cancelada - {business_name}"
+            
+            rows = _detail_row("📅", "Fecha programada", fecha_formateada)
+            extra = '<p style="margin:0 0 16px 0; color:#333; font-size:15px; line-height:1.6;">Tu cita ha sido <strong>cancelada</strong> exitosamente.</p>'
+            extra += '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Si deseas reagendar, contáctanos nuevamente. <strong>¡Esperamos poder atenderte pronto!</strong></p>'
+            
+            return _build_email("❌", "Cita Cancelada", subject, rows, extra)
+
+        # ==========================================
+        # MODIFICACIÓN
+        # ==========================================
+        if is_modified:
+            custom_subject = templates.get('modification', {}).get('subject')
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else f"🔄 Cita Modificada - {business_name}"
+            
+            rows = _detail_row("📅", "Nueva fecha", fecha_formateada)
+            rows += _detail_row("💼", "Servicio", details.get('servicio'))
+            rows += _detail_row("👨‍⚕️", "Profesional", details.get('profesional'))
+            rows += _detail_row("👥", "Personas", details.get('num_personas'))
+            rows += _detail_row("🪑", "Área", details.get('area'))
+            
+            notice = '''<div style="background:#fff8e1; border-left:4px solid #ffc107; padding:12px 16px; border-radius:0 6px 6px 0; margin-bottom:16px;">
+                <strong style="color:#856404;">⚠️ Tu cita ha sido modificada</strong>
+                <p style="margin:4px 0 0 0; color:#856404; font-size:13px;">Verifica los nuevos detalles a continuación.</p>
+            </div>'''
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Hemos actualizado los detalles de tu cita:</p>'
+            
+            return _build_email("🔄", "Cita Modificada", subject, rows, extra, notice)
+
+        # ==========================================
+        # CONFIRMACIONES POR TIPO DE NEGOCIO
+        # ==========================================
+        custom_subject = templates.get('confirmation', {}).get('subject')
         
-        # Continuar con templates normales de confirmación
         if business_type == 'restaurant':
-            subject = f"✅ Confirmación de Reservación - {business_name}"
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                    .detail-row {{ display: flex; padding: 10px 0; border-bottom: 1px solid #eee; }}
-                    .label {{ font-weight: bold; width: 150px; color: #666; }}
-                    .value {{ color: #333; }}
-                    .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                    .emoji {{ font-size: 24px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1 style="margin:0;">🍽️ Reservación Confirmada</h1>
-                        <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                    </div>
-                    <div class="content">
-                        <p>Estimado/a <strong>{customer_name}</strong>,</p>
-                        <p>¡Gracias por su reservación! Nos complace confirmar los siguientes detalles:</p>
-                        
-                        <div class="details">
-                            <div class="detail-row">
-                                <span class="label">📅 Fecha y hora:</span>
-                                <span class="value">{fecha_formateada}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="label">👥 Personas:</span>
-                                <span class="value">{details.get('num_personas', 'No especificado')}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="label">🪑 Área:</span>
-                                <span class="value">{details.get('area', 'Por asignar')}</span>
-                            </div>
-                            {f'<div class="detail-row"><span class="label">🎉 Ocasión:</span><span class="value">{details.get("ocasion")}</span></div>' if details.get('ocasion') else ''}
-                        </div>
-                        
-                        <p><strong>📍 Notas importantes:</strong></p>
-                        <ul>
-                            <li>Por favor llegue 10 minutos antes de su reservación</li>
-                            <li>La reservación se mantendrá por 15 minutos después de la hora programada</li>
-                            <li>Para cancelar o modificar, contáctenos con al menos 2 horas de anticipación</li>
-                        </ul>
-                        
-                        <p style="text-align: center; margin-top: 30px;">
-                            <strong>¡Será un placer atenderle!</strong> 🥂
-                        </p>
-                    </div>
-                    <div class="footer">
-                        <p>{business_name}</p>
-                        <p>Este es un correo automático, por favor no responda a este mensaje.</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
+            default_subject = f"✅ Reservación Confirmada - {business_name}"
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else default_subject
+            
+            rows = _detail_row("📅", "Fecha y hora", fecha_formateada)
+            rows += _detail_row("👥", "Personas", details.get('num_personas'))
+            rows += _detail_row("🪑", "Área", details.get('area'))
+            rows += _detail_row("🎉", "Ocasión", details.get('ocasion'))
+            
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Gracias por tu reservación! Aquí están los detalles:</p>'
+            extra += '''<div style="margin-top:16px; padding:12px; background:#f0fdf4; border-radius:6px; text-align:center;">
+                <p style="margin:0; color:#166534; font-size:14px;">📍 Por favor llega <strong>10 minutos antes</strong> de tu reservación</p>
+                <p style="margin:4px 0 0 0; color:#166534; font-size:13px;">La reservación se mantendrá por 15 minutos después de la hora programada</p>
+            </div>'''
+            
+            return _build_email("🍽️", "Reservación Confirmada", subject, rows, extra)
             
         elif business_type == 'clinic':
-            subject = f"✅ Confirmación de Cita Médica - {business_name}"
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                    .detail-row {{ padding: 10px 0; border-bottom: 1px solid #eee; }}
-                    .label {{ font-weight: bold; color: #666; }}
-                    .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1 style="margin:0;">🏥 Cita Confirmada</h1>
-                        <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                    </div>
-                    <div class="content">
-                        <p>Estimado/a <strong>{customer_name}</strong>,</p>
-                        <p>Su cita médica ha sido confirmada con los siguientes detalles:</p>
-                        
-                        <div class="details">
-                            <div class="detail-row">
-                                <span class="label">📅 Fecha y hora:</span><br>
-                                <span>{fecha_formateada}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="label">👨‍⚕️ Profesional:</span><br>
-                                <span>{details.get('profesional', 'Por asignar')}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="label">📋 Tipo de consulta:</span><br>
-                                <span>{details.get('servicio', 'Consulta general')}</span>
-                            </div>
-                        </div>
-                        
-                        <p><strong>📋 Recomendaciones:</strong></p>
-                        <ul>
-                            <li>Llegue 15 minutos antes de su cita</li>
-                            <li>Traiga su documento de identidad</li>
-                            <li>Si tiene estudios previos, tráigalos consigo</li>
-                            <li>Para cancelar, avise con al menos 24 horas de anticipación</li>
-                        </ul>
-                    </div>
-                    <div class="footer">
-                        <p>{business_name}</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
+            default_subject = f"✅ Cita Médica Confirmada - {business_name}"
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else default_subject
+            
+            rows = _detail_row("📅", "Fecha y hora", fecha_formateada)
+            rows += _detail_row("👨‍⚕️", "Profesional", details.get('profesional'))
+            rows += _detail_row("📋", "Tipo de consulta", details.get('servicio'))
+            rows += _detail_row("💰", "Precio", details.get('precio'))
+            
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Su cita médica ha sido confirmada:</p>'
+            extra += '''<div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:6px;">
+                <p style="margin:0 0 4px 0; color:#1e40af; font-size:14px; font-weight:600;">📋 Recomendaciones:</p>
+                <ul style="margin:0; padding-left:20px; color:#1e40af; font-size:13px; line-height:1.8;">
+                    <li>Llegue 15 minutos antes de su cita</li>
+                    <li>Traiga su documento de identidad</li>
+                    <li>Si tiene estudios previos, tráigalos consigo</li>
+                </ul>
+            </div>'''
+            
+            return _build_email("🏥", "Cita Confirmada", subject, rows, extra)
             
         elif business_type == 'salon':
-            subject = f"✅ Confirmación de Cita - {business_name}"
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                    .detail-row {{ padding: 10px 0; border-bottom: 1px solid #eee; }}
-                    .label {{ font-weight: bold; color: #666; }}
-                    .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1 style="margin:0;">💇‍♀️ Cita Confirmada</h1>
-                        <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                    </div>
-                    <div class="content">
-                        <p>¡Hola <strong>{customer_name}</strong>! ✨</p>
-                        <p>Tu cita ha sido confirmada. Aquí están los detalles:</p>
-                        
-                        <div class="details">
-                            <div class="detail-row">
-                                <span class="label">📅 Fecha y hora:</span><br>
-                                <span>{fecha_formateada}</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="label">💅 Servicio:</span><br>
-                                <span>{details.get('servicio', 'No especificado')}</span>
-                            </div>
-                            {f'<div class="detail-row"><span class="label">💰 Precio:</span><br><span>{details.get("precio")}</span></div>' if details.get('precio') else ''}
-                        </div>
-                        
-                        <p><strong>📝 Recuerda:</strong></p>
-                        <ul>
-                            <li>Llega 5-10 minutos antes de tu cita</li>
-                            <li>Si necesitas cancelar, avísanos con anticipación</li>
-                        </ul>
-                        
-                        <p style="text-align: center; margin-top: 30px;">
-                            <strong>¡Te esperamos!</strong> 💖
-                        </p>
-                    </div>
-                    <div class="footer">
-                        <p>{business_name}</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
+            default_subject = f"✅ Cita Confirmada - {business_name}"
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else default_subject
+            
+            rows = _detail_row("📅", "Fecha y hora", fecha_formateada)
+            rows += _detail_row("💅", "Servicio", details.get('servicio'))
+            rows += _detail_row("👤", "Profesional", details.get('profesional'))
+            rows += _detail_row("💰", "Precio", details.get('precio'))
+            
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Tu cita ha sido confirmada! ✨ Aquí están los detalles:</p>'
+            extra += '''<div style="margin-top:16px; padding:12px; background:#fdf2f8; border-radius:6px; text-align:center;">
+                <p style="margin:0; color:#9d174d; font-size:14px;">Llega <strong>5-10 minutos antes</strong> de tu cita 💖</p>
+            </div>'''
+            
+            return _build_email("💇‍♀️", "Cita Confirmada", subject, rows, extra)
             
         else:  # store u otros
-            subject = f"✅ Confirmación - {business_name}"
-            html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                    .header {{ background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-                    .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-                    .details {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-                    .footer {{ text-align: center; padding: 20px; color: #888; font-size: 12px; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1 style="margin:0;">📦 Entrega Programada</h1>
-                        <p style="margin:10px 0 0 0; opacity:0.9;">{business_name}</p>
-                    </div>
-                    <div class="content">
-                        <p>Estimado/a <strong>{customer_name}</strong>,</p>
-                        <p>Su entrega ha sido programada:</p>
-                        
-                        <div class="details">
-                            <p><strong>📅 Fecha:</strong> {fecha_formateada}</p>
-                            <p><strong>📦 Producto:</strong> {details.get('servicio', 'No especificado')}</p>
-                            {f'<p><strong>📍 Dirección:</strong> {details.get("direccion")}</p>' if details.get('direccion') else ''}
-                        </div>
-                        
-                        <p>Nos pondremos en contacto antes de la entrega.</p>
-                    </div>
-                    <div class="footer">
-                        <p>{business_name}</p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-        
-        return subject, html
-
+            default_subject = f"✅ Confirmación - {business_name}"
+            subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else default_subject
+            
+            rows = _detail_row("📅", "Fecha", fecha_formateada)
+            rows += _detail_row("📦", "Producto", details.get('servicio'))
+            rows += _detail_row("💰", "Precio", details.get('precio'))
+            rows += _detail_row("📍", "Dirección de entrega", details.get('direccion'))
+            rows += _detail_row("📋", "Detalles", details.get('detalles'))
+            
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Su entrega ha sido programada:</p>'
+            extra += '''<div style="margin-top:16px; padding:12px; background:#f0fdf4; border-radius:6px; text-align:center;">
+                <p style="margin:0; color:#166534; font-size:14px;">📞 Nos pondremos en contacto antes de la entrega</p>
+            </div>'''
+            
+            return _build_email("📦", "Entrega Programada", subject, rows, extra)
 
 # Instancia global
 email_service = EmailService()
+

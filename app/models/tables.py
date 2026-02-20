@@ -36,8 +36,38 @@ class Client(Base):
     
 
     # Relaciones
+    # Relaciones
     customers = relationship("Customer", back_populates="client")
     appointments = relationship("Appointment", back_populates="client")
+    email_settings = relationship("ClientEmailSettings", back_populates="client", uselist=False)
+
+
+class ClientEmailSettings(Base):
+    """
+    Configuración de correo personalizada por cliente.
+    """
+    __tablename__ = "client_email_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), unique=True)
+    
+    # Identidad Visual
+    primary_color = Column(String, default="#333333")  # Color principal (headers, botones)
+    secondary_color = Column(String, default="#666666") # Color secundario (acentos)
+    logo_url = Column(String, nullable=True)           # URL del logo de la empresa
+    
+    # Contenido
+    sender_name = Column(String, nullable=True)        # Nombre del remitente (ej: "Clínica X")
+    footer_text = Column(String, nullable=True)        # Texto del pie de página
+    
+    # Templates (JSON) - Overrides específicos
+    # {
+    #   "reminder": {"subject": "Recordatorio: {date}", "intro": "Hola...", "outro": "..."},
+    #   "confirmation": {"subject": "Confirmada!", ...}
+    # }
+    templates = Column(JSON, default={})
+    
+    client = relationship("Client", back_populates="email_settings")
 
 
 class Customer(Base):

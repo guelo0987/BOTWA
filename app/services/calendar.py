@@ -64,6 +64,11 @@ class CalendarService:
             tz_str = self._get_timezone(config)
             tz = pytz.timezone(tz_str)
             
+            # GUARD: Prevent infinite loop with 0 or negative duration
+            if duration_minutes < 1:
+                logger.warning(f"get_available_slots: duration_minutes={duration_minutes} is invalid, defaulting to 30")
+                duration_minutes = 30
+            
             # Horarios de negocio
             business_hours = config.get('business_hours', {'start': '08:00', 'end': '18:00'})
             start_hour, start_min = map(int, business_hours['start'].split(':'))

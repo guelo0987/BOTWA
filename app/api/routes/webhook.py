@@ -3,6 +3,9 @@ from fastapi.responses import PlainTextResponse
 import hmac
 import hashlib
 import logging
+import asyncio
+import json
+import time
 
 from app.core.config import settings
 from app.schemas.webhook import WhatsAppWebhook, ProcessedMessage
@@ -62,18 +65,6 @@ async def receive_webhook(
     try:
         body_bytes = await request.body()
         
-        # --- VERIFICACIÓN DE FIRMA (X-Hub-Signature-256) ---
-        if settings.WHATSAPP_APP_SECRET:
-            signature = request.headers.get("X-Hub-Signature-256", "")
-            expected = "sha256=" + hmac.new(
-                settings.WHATSAPP_APP_SECRET.encode(),
-                body_bytes,
-                hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(signature, expected):
-                logger.warning("Webhook con firma inválida rechazado")
-                raise HTTPException(status_code=401, detail="Invalid signature")
-        
         import json
         body = json.loads(body_bytes)
         logger.debug("Webhook recibido")
@@ -82,6 +73,32 @@ async def receive_webhook(
         
         if webhook_data.object != "whatsapp_business_account":
             return {"status": "ignored"}
+            
+        # --- VERIFICACIÓN DE FIRMA (X-Hub-Signature-256) PER-TENANT ---
+        # Extraemos el phone_number_id del primer event (usualmente solo viene 1)
+        phone_number_id = None
+        for entry in webhook_data.entry:
+            for change in entry.changes:
+                value = change.value
+                if hasattr(value, "metadata") and value.metadata:
+                    phone_number_id = value.metadata.phone_number_id
+                    break
+            if phone_number_id:
+                break
+                
+        if phone_number_id:
+            client = await client_service.get_client_by_phone_id(phone_number_id)
+            if client and client.whatsapp_app_secret:
+                signature = request.headers.get("X-Hub-Signature-256", "")
+                expected = "sha256=" + hmac.new(
+                    client.whatsapp_app_secret.encode(),
+                    body_bytes,
+                    hashlib.sha256
+                ).hexdigest()
+                if not hmac.compare_digest(signature, expected):
+                    logger.warning(f"Webhook con firma inválida rechazado para client_id={client.id}")
+                    raise HTTPException(status_code=401, detail="Invalid signature")
+        # Si no hay secret, pasa la validación (útil para dev o clientes en setup)
         
         for entry in webhook_data.entry:
             for change in entry.changes:
@@ -142,7 +159,8 @@ async def receive_webhook(
                                 pass  # Si Redis falla, no limitar
                             
                             logger.debug(f"[{processed.message_type}] {processed.contact_name}")
-                            background_tasks.add_task(handle_message, processed)
+                            # Usar debounce para agrupar mensajes rápidos del mismo usuario
+                            background_tasks.add_task(debounced_handle_message, processed)
                 
                 # Procesar statuses (para detectar mensajes desde Business Suite)
                 elif change.field == "messages" and value.statuses:
@@ -253,12 +271,145 @@ async def detect_business_suite_message(
         logger.debug(f"Error detectando mensaje Business Suite: {e}")
 
 
+# ==========================================
+# DEBOUNCE: Agrupa mensajes rápidos del mismo usuario
+# ==========================================
+DEBOUNCE_SECONDS = 10  # Esperar 10 segundos para agrupar mensajes
+
+async def debounced_handle_message(msg: ProcessedMessage):
+    """
+    En vez de procesar cada mensaje inmediatamente, espera DEBOUNCE_SECONDS
+    para ver si el usuario envía más mensajes. Si los envía, se combinan
+    todos en un solo mensaje antes de procesarlos con la IA.
+    
+    Esto evita que el bot responda a "alma rosa 1" y "f.miguelmatias30@gmail.com"
+    como dos conversaciones separadas.
+    """
+    # Si es audio, imagen o documento, procesar inmediatamente (no se puede combinar)
+    if msg.message_type in ("audio", "image", "document"):
+        await handle_message(msg)
+        return
+    
+    try:
+        redis = get_redis()
+        # Key única por usuario (client_phone_id + user_phone)
+        debounce_key = f"debounce:{msg.phone_number_id}:{msg.phone_number}"
+        gen_key = f"debounce_gen:{msg.phone_number_id}:{msg.phone_number}"
+        
+        # Guardar este mensaje en la cola de debounce
+        msg_data = json.dumps({
+            "content": msg.content,
+            "message_id": msg.message_id,
+            "message_type": msg.message_type,
+            "phone_number": msg.phone_number,
+            "phone_number_id": msg.phone_number_id,
+            "contact_name": msg.contact_name,
+            "media_id": msg.media_id,
+            "timestamp": time.time()
+        })
+        
+        await redis.rpush(debounce_key, msg_data)
+        await redis.expire(debounce_key, 30)  # TTL de seguridad
+        
+        # Incrementar generación y capturar nuestro número
+        my_gen = await redis.incr(gen_key)
+        await redis.expire(gen_key, 30)
+        
+        logger.debug(f"Debounce: msg encolado para {msg.phone_number}, gen={my_gen}")
+        
+        # Esperar a que lleguen más mensajes
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+        
+        # Verificar si somos la última generación (si no, otro mensaje llegó después)
+        current_gen = await redis.get(gen_key)
+        if current_gen and int(current_gen) != my_gen:
+            logger.debug(f"Debounce: gen {my_gen} descartada (actual={current_gen}) para {msg.phone_number}")
+            return  # Otro mensaje llegó después, dejamos que ese se encargue
+        
+        # Somos la última generación: recoger todos los mensajes pendientes
+        pending_msgs = await redis.lrange(debounce_key, 0, -1)
+        await redis.delete(debounce_key)
+        await redis.delete(gen_key)
+        
+        if not pending_msgs:
+            return
+        
+        # Combinar todos los mensajes en uno solo
+        messages = [json.loads(m) for m in pending_msgs]
+        
+        if len(messages) == 1:
+            # Solo un mensaje, procesar normal
+            combined_content = messages[0]["content"]
+        else:
+            # Múltiples mensajes: combinar
+            combined_content = "\n".join([m["content"] for m in messages if m["content"]])
+            logger.info(f"Debounce: combinando {len(messages)} mensajes de {msg.phone_number}: {combined_content[:100]}...")
+        
+        # Crear un ProcessedMessage combinado usando los datos del último mensaje
+        combined_msg = ProcessedMessage(
+            message_id=messages[-1]["message_id"],  # Último message_id
+            phone_number=msg.phone_number,
+            phone_number_id=msg.phone_number_id,
+            contact_name=msg.contact_name,
+            message_type="text",
+            content=combined_content,
+            media_id=None
+        )
+        
+        # Marcar como leído todos los mensajes individuales
+        try:
+            client = await client_service.get_client_by_phone_id(msg.phone_number_id)
+            if client and client.whatsapp_access_token:
+                for m in messages:
+                    try:
+                        await whatsapp_service.mark_as_read(
+                            m["message_id"],
+                            access_token=client.whatsapp_access_token,
+                            phone_number_id=client.whatsapp_instance_id,
+                            api_version=client.whatsapp_api_version or "v24.0",
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        
+        await handle_message(combined_msg)
+        
+    except Exception as e:
+        # Si el debounce falla, procesar normalmente
+        logger.warning(f"Debounce fallido, procesando directo: {e}")
+        await handle_message(msg)
+
+
 async def handle_message(msg: ProcessedMessage):
     """
     Maneja un mensaje procesado con IA.
     Soporta texto, audio y documentos.
     """
     try:
+        # 0. Lock de procesamiento: evitar que dos mensajes del mismo usuario
+        #    se procesen simultáneamente con la IA
+        try:
+            redis = get_redis()
+            lock_key = f"processing:{msg.phone_number_id}:{msg.phone_number}"
+            # Intentar adquirir lock con TTL de 60s (seguridad)
+            acquired = await redis.set(lock_key, "1", nx=True, ex=60)
+            if not acquired:
+                # Ya hay un mensaje procesándose para este usuario
+                # Esperar a que termine (máximo 30s)
+                for _ in range(60):  # 60 * 0.5s = 30s máximo
+                    await asyncio.sleep(0.5)
+                    if not await redis.exists(lock_key):
+                        break
+                # Intentar de nuevo
+                acquired = await redis.set(lock_key, "1", nx=True, ex=60)
+                if not acquired:
+                    logger.warning(f"Lock no adquirido para {msg.phone_number} después de esperar")
+                    # Forzar el lock (el anterior probablemente expiró)
+                    await redis.set(lock_key, "1", ex=60)
+        except Exception:
+            pass  # Si Redis falla, continuar sin lock
+        
         # 1. Identificar el Client (tenant)
         client = await client_service.get_client_by_phone_id(msg.phone_number_id)
         
@@ -426,3 +577,11 @@ async def handle_message(msg: ProcessedMessage):
                 )
         except Exception as send_err:
             logger.warning(f"No se pudo enviar mensaje de error al usuario: {send_err}")
+    finally:
+        # Siempre liberar el lock de procesamiento
+        try:
+            redis = get_redis()
+            lock_key = f"processing:{msg.phone_number_id}:{msg.phone_number}"
+            await redis.delete(lock_key)
+        except Exception:
+            pass

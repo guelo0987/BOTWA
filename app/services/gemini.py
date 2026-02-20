@@ -379,12 +379,21 @@ CONSULTA DE PRODUCTOS:
 
 FLUJO DE COMPRA/ENTREGA (cuando el negocio tiene entregas y el cliente quiere entrega):
 1. Cliente muestra interés en comprar y quiere entrega a domicilio
-2. Recopila: nombre, correo, producto(s), dirección, fecha/hora entrega
-3. Confirma: "Te enviaremos la confirmación a [correo]. Pago contra entrega."
-4. NO agendes entrega si solo piden información o ir a ver al local
+2. 🚫 ANTES DE AGENDAR, DEBES tener: nombre, correo electrónico (o teléfono si no tiene), producto(s), dirección, fecha/hora
+3. Si falta el correo o teléfono, PREGUNTA: "¿Cuál es tu correo electrónico para enviarte la confirmación? Si no tienes, puedo usar tu número de teléfono."
+4. NO llames a crear_cita hasta tener correo o teléfono
+5. Confirma todos los datos ANTES de crear la cita: "Te enviaremos la confirmación a [correo]. Pago contra entrega."
+6. NO agendes entrega si solo piden información o ir a ver al local
+
+🚫 PROHIBIDO agendar sin correo o teléfono. Si el usuario no lo proporciona, INSISTE amablemente antes de proceder.
+
+SI EL USUARIO DA SU CORREO O TELÉFONO DESPUÉS DE QUE LA CITA YA FUE CREADA:
+- Usa guardar_datos_usuario para guardarlo. NO uses modificar_cita.
+- Responde: "¡Listo! He guardado tu correo [correo]. Te enviaremos la confirmación ahí."
 
 MODIFICAR/CANCELAR ENTREGA:
 - Pregunta correo primero. Busca por fecha/producto. Confirma envío de confirmación
+- SOLO usa modificar_cita cuando el usuario EXPLÍCITAMENTE pida cambiar fecha, hora o producto. NUNCA para guardar correo/teléfono.
 
 REGLAS:
 - Catálogo con ver_servicios. Visitas sin cita: horarios + "puedes pasar cuando quieras" si aplica
@@ -514,8 +523,8 @@ HERRAMIENTAS (no mencionar al usuario):
 - ver_mis_citas: para listar citas del cliente (USA cuando pregunten por sus citas/reservas)
 - confirmar_cita: para confirmar asistencia cuando el usuario responde "Sí" a un mensaje de confirmación
 - cancelar_cita: para cancelar
-- modificar_cita: para reagendar
-- guardar_datos_usuario: para guardar info del cliente
+- modificar_cita: para reagendar (SOLO si piden cambio de fecha/hora/servicio, NUNCA para guardar correo/teléfono)
+- guardar_datos_usuario: para guardar info del cliente (correo, teléfono, dirección, etc.) - SIEMPRE usa esto cuando el usuario proporcione datos personales DESPUÉS de que la cita ya fue creada
 - escalar_a_humano: para emergencias/quejas
 
 Formato WhatsApp: *negrita* _cursiva_
@@ -630,31 +639,33 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 tool_executor
             )
             
-            # Si Gemini devolvió respuesta vacía, reintentar hasta 2 veces
+            # Si Gemini devolvió respuesta vacía, reintentar SIN tools para evitar
+            # que ejecute herramientas duplicadas (ej: crear_cita de nuevo)
             empty_msg = "Lo siento, no pude procesar tu solicitud"
             retries = 0
             while final_response.startswith(empty_msg) and retries < 1:
                 retries += 1
-                logger.info(f"Reintentando Gemini (intento {retries}/1) por respuesta vacía...")
+                logger.info(f"Reintentando Gemini (intento {retries}/1) por respuesta vacía (SIN tools)...")
                 retry_response = await asyncio.wait_for(
                     self.client.aio.models.generate_content(
                         model=self.model,
                         contents=contents,
                         config=types.GenerateContentConfig(
-                            system_instruction=system_prompt,
+                            system_instruction=system_prompt + "\n\n⚠️ IMPORTANTE: Responde SOLO con texto. NO uses herramientas. Resume lo que ha pasado en la conversación de forma útil para el usuario.",
                             temperature=0.5 + (retries * 0.1),  # Subir temp ligeramente en retry
                             top_p=0.95,
                             max_output_tokens=1024,
-                            tools=TOOL_DEFINITIONS,
+                            # NO incluir tools en retry para evitar duplicados
                         )
                     ),
                     timeout=30.0
                 )
-                final_response = await self._process_response(
-                    retry_response,
-                    contents,
-                    tool_executor
-                )
+                # Procesar SIN tool_executor ya que no hay tools
+                if retry_response.candidates and retry_response.candidates[0].content:
+                    for part in retry_response.candidates[0].content.parts or []:
+                        if hasattr(part, 'text') and part.text and part.text.strip():
+                            final_response = part.text.strip()
+                            break
             
             return self._clean_response(final_response)
             

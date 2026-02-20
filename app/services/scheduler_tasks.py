@@ -4,6 +4,7 @@ Los recordatorios se envían solo por correo para evitar spam en WhatsApp.
 """
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_
+from sqlalchemy.orm import joinedload
 import logging
 import pytz
 
@@ -46,6 +47,7 @@ async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
                         Client.is_active == True
                     )
                 )
+                .options(joinedload(Client.email_settings))
             )
             
             appointments = result.all()
@@ -81,6 +83,7 @@ async def send_appointment_reminders_task(hours_before: int = 24) -> dict:
                         appointment_date=local_time,
                         appointment_details=appointment_details,
                         hours_before=hours_before,
+                        client_settings=client.email_settings
                     )
                     if ok:
                         sent_count += 1
@@ -143,6 +146,7 @@ async def send_confirmation_requests_task(hours_before: int = 48) -> dict:
                         Client.is_active == True
                     )
                 )
+                .options(joinedload(Client.email_settings))
             )
             
             for appointment, customer, client in result.all():
@@ -176,6 +180,7 @@ async def send_confirmation_requests_task(hours_before: int = 48) -> dict:
                         appointment_date=local_time,
                         appointment_details=appointment_details,
                         hours_before=hours_before,
+                        client_settings=client.email_settings
                     )
                     if ok:
                         sent_count += 1

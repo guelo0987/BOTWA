@@ -1,5 +1,6 @@
 import logging
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import Client, Customer
@@ -26,12 +27,14 @@ class ClientService:
         """
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(Client).where(
+                select(Client).options(
+                    joinedload(Client.email_settings)
+                ).where(
                     Client.whatsapp_instance_id == phone_number_id,
                     Client.is_active == True
                 )
             )
-            return result.scalar_one_or_none()
+            return result.unique().scalar_one_or_none()
     
     async def get_or_create_customer(
         self,

@@ -581,21 +581,19 @@ class ToolExecutor:
             if not slots:
                 return f"No hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Probamos otra fecha?"
             
-            # DEBUG: log slots para diagnosticar
-            logger.info(f"buscar_disponibilidad: {len(slots)} slots encontrados. Primero: {slots[0]['start']}, Último: {slots[-1]['start']}")
+            # DEBUG: log completo de slots para diagnosticar
+            logger.info(
+                f"buscar_disponibilidad: {len(slots)} slots en {fecha_str}. "
+                f"calendar_id={calendar_id}, duration={duration}min. "
+                f"Slots=[{', '.join(s['start']+'-'+s['end'] for s in slots)}]"
+            )
             
-            # Mostrar slots agrupados por mañana/tarde para que el usuario vea todo el rango
-            morning = [s for s in slots if int(s['start'].split(':')[0]) < 12]
-            afternoon = [s for s in slots if int(s['start'].split(':')[0]) >= 12]
-            
+            # Mostrar slots individualmente para que el usuario pueda elegir
             result = f"📅 Horarios disponibles para el {fecha.strftime('%d de %B de %Y')}:\n\n"
+            for s in slots:
+                result += f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}\n"
             
-            if morning:
-                result += f"🌅 Mañana: {_format_time_ampm(morning[0]['start'])} - {_format_time_ampm(morning[-1]['end'])}\n"
-            if afternoon:
-                result += f"🌇 Tarde: {_format_time_ampm(afternoon[0]['start'])} - {_format_time_ampm(afternoon[-1]['end'])}\n"
-            
-            result += "\n¿A qué hora te gustaría?"
+            result += "\n¿Cuál de estos horarios te gustaría?"
             return result
             
         except ValueError:
@@ -626,6 +624,25 @@ class ToolExecutor:
             area = args.get("area")
             ocasion = args.get("ocasion")
             detalles = args.get("detalles")
+            
+            # Sanitizar inputs: remover HTML tags
+            import re as _re
+            def _sanitize(val):
+                if isinstance(val, str):
+                    return _re.sub(r'<[^>]+>', '', val).strip()
+                return val
+            
+            servicio = _sanitize(servicio)
+            direccion = _sanitize(direccion)
+            detalles = _sanitize(detalles)
+            ocasion = _sanitize(ocasion)
+            
+            # Validar email si se proporcionó
+            if email:
+                email = email.strip()
+                email_regex = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+                if not _re.match(email_regex, email):
+                    return f"El correo '{email}' no parece ser válido. ¿Podrías verificarlo? Ejemplo: nombre@correo.com"
             
             # VALIDACIÓN INNATA: Si el negocio tiene calendario y varios profesionales, profesional_id es obligatorio (cualquier tipo: clinic, salon, etc.)
             if (
@@ -761,6 +778,14 @@ class ToolExecutor:
             hora_solicitada = fecha.strftime('%H:%M')
             slot_disponible = False
             
+            # DEBUG: log completo para diagnosticar problemas de horario
+            logger.info(
+                f"crear_cita: verificando {hora_solicitada} en {len(slots_disponibles)} slots disponibles. "
+                f"calendar_id={calendar_id}, fecha={fecha_str}, duration={duration}min"
+            )
+            if slots_disponibles:
+                logger.info(f"crear_cita: slots=[{', '.join(s['start']+'-'+s['end'] for s in slots_disponibles)}]")
+            
             for slot in slots_disponibles:
                 slot_start = slot.get('start', '')
                 slot_end = slot.get('end', '')
@@ -777,9 +802,14 @@ class ToolExecutor:
                     # La hora de inicio debe caer dentro de algún slot libre
                     if requested_min >= slot_start_min and requested_min < slot_end_min:
                         slot_disponible = True
+                        logger.info(f"crear_cita: MATCH hora={hora_solicitada} en slot {slot_start}-{slot_end}")
                         break
             
             if not slot_disponible:
+                logger.warning(
+                    f"crear_cita: hora {hora_solicitada} NO disponible. "
+                    f"Slots disponibles: {[s['start']+'-'+s['end'] for s in slots_disponibles]}"
+                )
                 # Formatear slots disponibles para mostrar al usuario
                 slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
                 if slots_disponibles:
@@ -844,7 +874,8 @@ class ToolExecutor:
                             business_type=self.business_type,
                             customer_name=nombre,
                             appointment_date=fecha,
-                            appointment_details=appointment_details
+                            appointment_details=appointment_details,
+                            client_settings=self.client.email_settings
                         )
                     except Exception as e:
                         logger.error(f"Error enviando email de confirmación: {e}")
@@ -1113,7 +1144,8 @@ class ToolExecutor:
                                 business_type=self.business_type,
                                 customer_name=self.customer.full_name or "Cliente",
                                 appointment_date=appointment.start_time,
-                                appointment_details={"cancelado": True}
+                                appointment_details={"cancelado": True},
+                                client_settings=self.client.email_settings
                             )
                             logger.info(f"Email de cancelación {'enviado' if email_enviado else 'falló'} a {customer_email}")
                         except Exception as e:
@@ -1358,7 +1390,8 @@ class ToolExecutor:
                                 business_type=self.business_type,
                                 customer_name=self.customer.full_name or "Cliente",
                                 appointment_date=fecha_nueva,
-                                appointment_details=appointment_details
+                                appointment_details=appointment_details,
+                                client_settings=self.client.email_settings
                             )
                         except Exception as e:
                             logger.error(f"Error enviando email de modificación: {e}")
@@ -1387,12 +1420,32 @@ class ToolExecutor:
     # GUARDAR DATOS
     # ==========================================
     async def _guardar_datos(self, args: dict) -> str:
-        """Guarda datos del usuario."""
+        """Guarda datos del usuario con validación."""
         try:
+            import re
             from app.services.client_service import client_service
             
-            campo = args.get("campo")
-            valor = args.get("valor")
+            campo = args.get("campo", "").strip()
+            valor = args.get("valor", "").strip()
+            
+            if not campo or not valor:
+                return "No se proporcionaron datos para guardar."
+            
+            # Sanitizar: remover tags HTML para evitar XSS en admin panel
+            valor = re.sub(r'<[^>]+>', '', valor).strip()
+            
+            # Validación de email
+            if campo.lower() in ('email', 'correo', 'correo_electronico', 'e-mail'):
+                email_regex = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+                if not re.match(email_regex, valor):
+                    return f"El correo '{valor}' no parece ser válido. ¿Podrías verificarlo? Ejemplo: nombre@correo.com"
+            
+            # Validación de teléfono
+            if campo.lower() in ('telefono', 'tel', 'phone', 'celular', 'móvil'):
+                digitos = re.sub(r'[^\d+]', '', valor)
+                if len(digitos) < 7:
+                    return f"El teléfono '{valor}' parece muy corto. ¿Podrías verificarlo?"
+                valor = digitos  # Guardar solo dígitos limpios
             
             await client_service.update_customer_data(
                 customer_id=self.customer.id,

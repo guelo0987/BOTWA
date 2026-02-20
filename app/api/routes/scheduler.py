@@ -3,7 +3,7 @@ Endpoints para tareas programadas (recordatorios, confirmaciones).
 Estos endpoints pueden ser llamados manualmente o por un cron job externo.
 El scheduler automático también ejecuta estas tareas internamente.
 """
-from fastapi import APIRouter, HTTPException, Header, status
+from fastapi import APIRouter, HTTPException, Header, Depends, status
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 import logging
@@ -19,7 +19,22 @@ from app.services.scheduler_tasks import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+async def verify_scheduler_key(x_api_key: str | None = Header(None, alias="X-API-Key")):
+    """
+    Verifica la API key del scheduler.
+    En modo dev sin SCHEDULER_API_KEY configurada, permite todo.
+    En producción, siempre requiere API key válida.
+    """
+    if not settings.SCHEDULER_API_KEY:
+        if settings.ENV_MODE == "dev":
+            return  # Dev mode — sin protección
+        raise HTTPException(status_code=403, detail="Forbidden: SCHEDULER_API_KEY not configured")
+    if not x_api_key or x_api_key != settings.SCHEDULER_API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: invalid or missing X-API-Key")
+
+
+router = APIRouter(dependencies=[Depends(verify_scheduler_key)])
 
 
 @router.post(
@@ -50,7 +65,6 @@ router = APIRouter()
 )
 async def send_appointment_reminders(
     hours_before: int = 24,
-    x_api_key: str | None = Header(None, alias="X-API-Key", description="API key para autenticación")
 ) -> dict:
     """
     Envía recordatorios de citas próximas por correo electrónico.
@@ -66,14 +80,6 @@ async def send_appointment_reminders(
          -H "X-API-Key: your-token"
     ```
     """
-    # Verificar API key si está configurada
-    expected_key = settings.WHATSAPP_VERIFY_TOKEN
-    if x_api_key and x_api_key != expected_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid API key"
-        )
-    
     try:
         result = await send_appointment_reminders_task(hours_before=hours_before)
         
@@ -119,7 +125,6 @@ async def send_appointment_reminders(
 )
 async def send_confirmation_requests(
     hours_before: int = 48,
-    x_api_key: str | None = Header(None, alias="X-API-Key", description="API key para autenticación")
 ) -> dict:
     """
     Envía solicitudes de confirmación por correo para citas próximas.
@@ -129,13 +134,6 @@ async def send_confirmation_requests(
     
     **Nota:** Esta tarea también se ejecuta automáticamente cada 6 horas.
     """
-    expected_key = settings.WHATSAPP_VERIFY_TOKEN
-    if x_api_key and x_api_key != expected_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid API key"
-        )
-    
     try:
         result = await send_confirmation_requests_task(hours_before=hours_before)
         
@@ -191,7 +189,6 @@ async def send_confirmation_requests(
 )
 async def get_pending_appointments(
     days_ahead: int = 7,
-    x_api_key: str | None = Header(None, alias="X-API-Key", description="API key para autenticación")
 ) -> dict:
     """
     Lista las citas pendientes para los próximos días.

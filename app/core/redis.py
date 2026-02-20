@@ -77,8 +77,20 @@ class ConversationMemory:
         Args:
             client_id: ID del cliente (tenant)
             phone_number: Número de teléfono del usuario
+        
+        Raises:
+            ValueError: Si client_id o phone_number son inválidos
         """
-        self.key = f"chat:{client_id}:{phone_number}"
+        # --- Multi-tenant isolation: validar inputs ---
+        if not isinstance(client_id, int) or client_id <= 0:
+            raise ValueError(f"Invalid client_id: {client_id}")
+        # Sanitizar phone_number para evitar key injection (ej: "*" o patterns Redis)
+        safe_phone = ''.join(c for c in phone_number if c.isdigit() or c == '+')
+        if not safe_phone:
+            raise ValueError(f"Invalid phone_number: cannot be empty after sanitization")
+        
+        self.client_id = client_id
+        self.key = f"chat:{client_id}:{safe_phone}"
         self.redis = get_redis()
     
     async def add_message(self, role: str, content: str):
@@ -168,21 +180,22 @@ class ConversationMemory:
             await self.redis.delete(status_key)
             await self.redis.delete(admin_key)
     
-    async def set_escalated(self, escalated: bool = True, motivo: str | None = None):
+    async def set_escalated(self, escalated: bool = True, motivo: str | None = None, ttl_seconds: int = 7200):
         """
         Marca la conversación como escalada.
         
         Args:
             escalated: True para escalar, False para desescalar
             motivo: Motivo de la escalación (opcional)
+            ttl_seconds: Tiempo antes de que la IA se reanude automáticamente (default: 2 horas)
         """
         status_key = f"{self.key}:status"
         reason_key = f"{self.key}:escalation_reason"
         
         if escalated:
-            await self.redis.set(status_key, "escalated", ex=settings.SESSION_EXPIRE_SECONDS)
+            await self.redis.set(status_key, "escalated", ex=ttl_seconds)
             if motivo:
-                await self.redis.set(reason_key, motivo, ex=settings.SESSION_EXPIRE_SECONDS)
+                await self.redis.set(reason_key, motivo, ex=ttl_seconds)
         else:
             await self.redis.delete(status_key)
             await self.redis.delete(reason_key)

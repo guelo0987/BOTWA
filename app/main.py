@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
@@ -9,7 +8,6 @@ from app.core.database import init_db
 from app.core.redis import init_redis, close_redis
 from app.api.routes import webhook
 from app.api.routes import scheduler
-from app.api.routes import admin
 from app.services.auto_scheduler import start_scheduler, stop_scheduler
 
 # Configurar logging
@@ -19,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 
 import os
 
-log_level = logging.DEBUG if settings.ENV_MODE == "dev" else logging.INFO
+log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
 
 class CloudRunJsonFormatter(logging.Formatter):
@@ -136,17 +134,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configurar CORS
-_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 # ==========================================
 # RUTAS
 # ==========================================
@@ -154,7 +141,6 @@ app.add_middleware(
 # Incluir routers
 app.include_router(webhook.router, prefix="/webhook", tags=["WhatsApp"])
 app.include_router(scheduler.router, prefix="/scheduler", tags=["Scheduler"])
-app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 
 
 @app.get("/", tags=["Root"])

@@ -88,8 +88,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT_MESSAGES: int
     
     # --- Seguridad ---
-    ADMIN_API_KEY: str | None = None
-    ALLOWED_ORIGINS: str
+    SCHEDULER_API_KEY: str | None = None
 
     model_config = ConfigDict(
         env_file=".env",
