@@ -1481,6 +1481,24 @@ class ToolExecutor:
             memory = ConversationMemory(self.client.id, self.customer.phone_number)
             await memory.set_escalated(escalated=True, motivo=motivo)
             
+            # Notificar al dueño por correo
+            if self.client.notification_email:
+                try:
+                    from app.services.email_service import email_service
+                    import asyncio
+                    asyncio.create_task(
+                        email_service.send_escalation_email(
+                            to_email=self.client.notification_email,
+                            business_name=self.client.business_name,
+                            customer_name=self.customer.full_name or "Cliente",
+                            customer_phone=self.customer.phone_number,
+                            motivo=motivo or "No especificado",
+                            resumen=resumen or "El cliente ha solicitado hablar con un agente humano."
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Error al enviar notificación de escalación: {e}")
+            
             logger.warning(
                 f"🚨 ESCALADO - {urgencia.upper()}\n"
                 f"   Negocio: {self.client.business_name}\n"

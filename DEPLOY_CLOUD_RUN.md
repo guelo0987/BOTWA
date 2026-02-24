@@ -43,7 +43,7 @@ gcloud run deploy whatsapp-bot \
   --cpu 1 \
   --min-instances 0 \
   --max-instances 10 \
-  --set-env-vars="ENV_MODE=prod,LOG_LEVEL=INFO,DATA_BASE_CONNECTION_STRING=tu_url_neon,REDIS_URL=tu_url_redis,REDIS_CONNECT_TIMEOUT_SECONDS=3.0,REDIS_SOCKET_TIMEOUT_SECONDS=3.0,REDIS_REQUIRED=true,WHATSAPP_VERIFY_TOKEN=n8n,GEMINI_API_KEY=tu_gemini_key,GEMINI_MODEL=gemini-2.5-flash,GOOGLE_CREDENTIALS_PATH=credentials/google_calendar_service.json,RESEND_API_KEY=tu_resend_api_key,EMAIL_FROM=notificaciones@bot.dlcsoft.dev,SESSION_EXPIRE_SECONDS=14400,MAX_CONTEXT_MESSAGES=20"
+  --set-env-vars="ENV_MODE=prod,LOG_LEVEL=INFO,DATA_BASE_CONNECTION_STRING=tu_url_neon,REDIS_URL=rediss://default:TU_PASSWORD_AQUI@tu_host.upstash.io:6379,REDIS_CONNECT_TIMEOUT_SECONDS=3.0,REDIS_SOCKET_TIMEOUT_SECONDS=3.0,REDIS_REQUIRED=true,WHATSAPP_VERIFY_TOKEN=n8n,GEMINI_API_KEY=tu_gemini_key,GEMINI_MODEL=gemini-2.5-flash,GOOGLE_CREDENTIALS_PATH=credentials/google_calendar_service.json,RESEND_API_KEY=tu_resend_api_key,EMAIL_FROM=notificaciones@bot.dlcsoft.dev,SESSION_EXPIRE_SECONDS=14400,MAX_CONTEXT_MESSAGES=20"
 ```
 
 ### Configuración Segura de Variables (Recomendado)
