@@ -43,6 +43,7 @@ python-multipart==0.0.9
 python-dotenv==1.0.1
 apscheduler==3.10.4
 gunicorn==22.0.0
+resend==2.1.0
 
 # ==========================================
 # DESARROLLO

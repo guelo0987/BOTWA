@@ -68,11 +68,8 @@ class Settings(BaseSettings):
     # --- Google Calendar ---
     GOOGLE_CREDENTIALS_PATH: str
     
-    # --- Email (SMTP) ---
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int | None = None
-    SMTP_USER: str | None = None
-    SMTP_PASSWORD: str | None = None
+    # --- Email (Resend) ---
+    RESEND_API_KEY: str | None = None
     EMAIL_FROM: str | None = None
     
     # --- Supabase S3 (catálogos PDF) ---

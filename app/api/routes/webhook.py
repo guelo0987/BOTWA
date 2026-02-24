@@ -529,6 +529,22 @@ async def handle_message(msg: ProcessedMessage):
         # Cargar historial completo (incluye el mensaje que acabamos de agregar)
         history = await memory.get_context_for_llm()
         
+        # Notificar al dueño si es el primer mensaje de la conversación
+        if len(history) == 1 and client.notification_email:
+            try:
+                from app.services.email_service import email_service
+                asyncio.create_task(
+                    email_service.send_new_conversation_email(
+                        to_email=client.notification_email,
+                        business_name=client.business_name,
+                        customer_name=customer.full_name or "Cliente",
+                        customer_phone=customer.phone_number,
+                        first_message=user_message
+                    )
+                )
+            except Exception as e:
+                logger.error(f"Error al intentar enviar correo de nueva conversación: {e}")
+        
         # 7. Generar respuesta con Gemini
         logger.debug("Generando respuesta con Gemini...")
         

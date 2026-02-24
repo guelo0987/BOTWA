@@ -15,47 +15,50 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Servicio para enviar emails de confirmación."""
+    """Servicio para enviar emails de confirmación con Resend."""
     
-    def __init__(self, smtp_host=None, smtp_port=None, smtp_user=None, smtp_password=None, from_email=None):
+    def __init__(self, resend_api_key=None, from_email=None):
         """
-        Inicializa el servicio de email.
+        Inicializa el servicio de email con Resend.
         
         Args:
-            smtp_host: Host SMTP (opcional, usa settings si no se proporciona)
-            smtp_port: Puerto SMTP (opcional)
-            smtp_user: Usuario SMTP (opcional)
-            smtp_password: Contraseña SMTP (opcional)
-            from_email: Email remitente (opcional)
+            resend_api_key: API Key de Resend (opcional, usa settings si no se proporciona)
+            from_email: Email remitente (opcional, usa settings si no se proporciona)
         """
+        import resend
+        
         try:
             # Intentar usar settings si están disponibles
             from app.core.config import settings as app_settings
-            self.smtp_host = smtp_host or getattr(app_settings, 'SMTP_HOST', 'smtp.gmail.com')
-            self.smtp_port = smtp_port or getattr(app_settings, 'SMTP_PORT', 587)
-            self.smtp_user = smtp_user or getattr(app_settings, 'SMTP_USER', None)
-            self.smtp_password = smtp_password or getattr(app_settings, 'SMTP_PASSWORD', None)
-            self.from_email = from_email or getattr(app_settings, 'EMAIL_FROM', self.smtp_user)
+            self.api_key = resend_api_key or getattr(app_settings, 'RESEND_API_KEY', None)
+            self.from_email = from_email or getattr(app_settings, 'EMAIL_FROM', 'notificaciones@bot.dlcsoft.dev')
         except Exception:
-            # Si settings no está disponible, usar parámetros o variables de entorno
+            # Si settings no está disponible, usar variables de entorno
             import os
-            self.smtp_host = smtp_host or os.getenv('SMTP_HOST', 'smtp.gmail.com')
-            self.smtp_port = smtp_port or int(os.getenv('SMTP_PORT', '587'))
-            self.smtp_user = smtp_user or os.getenv('SMTP_USER')
-            self.smtp_password = smtp_password or os.getenv('SMTP_PASSWORD')
-            self.from_email = from_email or os.getenv('EMAIL_FROM', self.smtp_user)
+            self.api_key = resend_api_key or os.getenv('RESEND_API_KEY')
+            self.from_email = from_email or os.getenv('EMAIL_FROM', 'notificaciones@bot.dlcsoft.dev')
         
-        self.enabled = bool(self.smtp_user and self.smtp_password)
+        self.enabled = bool(self.api_key)
         
-        if not self.enabled:
-            logger.warning("Email service disabled - SMTP credentials not configured")
+        if self.enabled:
+            resend.api_key = self.api_key
+        else:
+            logger.warning("Email service disabled - Resend API Key not configured")
     
-    def _send_smtp(self, msg: MIMEMultipart):
-        """Envía un email de forma síncrona (solo para uso con asyncio.to_thread)."""
-        with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-            server.starttls()
-            server.login(self.smtp_user, self.smtp_password)
-            server.send_message(msg)
+    async def _send_resend(self, subject: str, to_email: str, html_content: str, sender_display: str):
+        """Envía el email usando el SDK de Resend en un hilo separado."""
+        import resend
+        
+        def _send():
+            params = {
+                "from": f"{sender_display} <{self.from_email}>",
+                "to": to_email,
+                "subject": subject,
+                "html": html_content
+            }
+            return resend.Emails.send(params)
+            
+        return await asyncio.to_thread(_send)
     
     async def send_confirmation_email(
         self,
@@ -100,16 +103,14 @@ class EmailService:
             sender_display = business_name
             if client_settings and getattr(client_settings, 'sender_name', None):
                 sender_display = client_settings.sender_name
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"{sender_display} <{self.from_email}>"
-            msg['To'] = to_email
             
-            # Agregar contenido HTML
-            msg.attach(MIMEText(html_content, 'html', 'utf-8'))
-            
-            # Enviar (en thread para no bloquear el event loop)
-            await asyncio.to_thread(self._send_smtp, msg)
+            # Enviar usando Resend
+            await self._send_resend(
+                subject=subject,
+                to_email=to_email,
+                html_content=html_content,
+                sender_display=sender_display
+            )
             
             logger.debug(f"Email de confirmación enviado a {to_email}")
             return True
@@ -204,13 +205,13 @@ class EmailService:
             sender_display = business_name
             if client_settings and getattr(client_settings, 'sender_name', None):
                 sender_display = client_settings.sender_name
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"{sender_display} <{self.from_email}>"
-            msg['To'] = to_email
-            msg.attach(MIMEText(html, 'html', 'utf-8'))
             
-            await asyncio.to_thread(self._send_smtp, msg)
+            await self._send_resend(
+                subject=subject,
+                to_email=to_email,
+                html_content=html,
+                sender_display=sender_display
+            )
             
             logger.debug(f"Email de recordatorio enviado a {to_email}")
             return True
@@ -440,6 +441,112 @@ class EmailService:
             </div>'''
             
             return _build_email("📦", "Entrega Programada", subject, rows, extra)
+
+    async def send_escalation_email(
+        self,
+        to_email: str,
+        business_name: str,
+        customer_name: str,
+        customer_phone: str,
+        motivo: str,
+        resumen: str
+    ) -> bool:
+        """Envía notificación al dueño del negocio cuando un usuario pide hablar con un humano."""
+        if not self.enabled:
+            return False
+            
+        try:
+            subject = f"⚠️ Atención Requerida: Un cliente quiere hablar con un humano - {business_name}"
+            
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"></head>
+            <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:20px; background-color:#f4f4f7;">
+                <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                    <div style="background: #dc2626; padding: 20px; color: white; text-align: center;">
+                        <h2 style="margin: 0; font-size: 20px;">⚠️ Un cliente ha solicitado asistencia humana</h2>
+                    </div>
+                    <div style="padding: 24px;">
+                        <p style="margin-top:0;">Hola,</p>
+                        <p>El bot de <strong>{business_name}</strong> ha sido pausado para la siguiente conversación porque el cliente solicitó atención de un asesor humano.</p>
+                        
+                        <div style="background: #fdf2f8; border-left: 4px solid #db2777; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
+                            <p style="margin: 0 0 8px 0;"><strong>Cliente:</strong> {customer_name} ({customer_phone})</p>
+                            <p style="margin: 0 0 8px 0;"><strong>Motivo detectado:</strong> {motivo}</p>
+                            <p style="margin: 0;"><strong>Resumen de la solicitud:</strong><br>{resumen}</p>
+                        </div>
+                        
+                        <p>Por favor, ingresa a tu Business Suite de WhatsApp o a tu panel de administración para responderle al cliente. Recuerda "Devolver el control a la IA" cuando termines.</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            await self._send_resend(
+                subject=subject,
+                to_email=to_email,
+                html_content=html,
+                sender_display=f"Bot de {business_name}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error enviando email de escalación: {e}")
+            return False
+
+    async def send_new_conversation_email(
+        self,
+        to_email: str,
+        business_name: str,
+        customer_name: str,
+        customer_phone: str,
+        first_message: str
+    ) -> bool:
+        """Envía notificación al dueño cuando se inicia una nueva conversación."""
+        if not self.enabled:
+            return False
+            
+        try:
+            subject = f"💬 Nueva Conversación Iniciada - {business_name}"
+            
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"></head>
+            <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:20px; background-color:#f4f4f7;">
+                <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                    <div style="background: #2563eb; padding: 20px; color: white; text-align: center;">
+                        <h2 style="margin: 0; font-size: 20px;">💬 Nueva conversación detectada</h2>
+                    </div>
+                    <div style="padding: 24px;">
+                        <p style="margin-top:0;">Hola,</p>
+                        <p>Un cliente acaba de iniciar una nueva conversación con el bot de <strong>{business_name}</strong>.</p>
+                        
+                        <div style="background: #eff6ff; border-left: 4px solid #3b82f6; padding: 16px; margin: 20px 0; border-radius: 0 4px 4px 0;">
+                            <p style="margin: 0 0 8px 0;"><strong>Cliente:</strong> {customer_name} ({customer_phone})</p>
+                            <p style="margin: 0; color: #4b5563;"><em>"{first_message}"</em></p>
+                        </div>
+                        
+                        <p style="font-size: 13px; color: #6b7280; font-style: italic;">
+                        Esta notificación es solo informativa. El bot ya se está encargando de responderle al cliente.
+                        </p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            await self._send_resend(
+                subject=subject,
+                to_email=to_email,
+                html_content=html,
+                sender_display=f"Bot de {business_name}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error enviando email de nueva conversación: {e}")
+            return False
 
 # Instancia global
 email_service = EmailService()

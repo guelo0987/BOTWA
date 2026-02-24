@@ -22,6 +22,9 @@ class Client(Base):
     whatsapp_app_secret = Column(String, nullable=True)     # App Secret para verificar firmas
     whatsapp_api_version = Column(String, default="v21.0")  # Versión API de Meta
     
+    # Notificaciones (NUEVO)
+    notification_email = Column(String, nullable=True)      # A donde llegan alertas de este bot
+    
     # EL CEREBRO (Personalidad)
     # Aquí guardas: "Eres una recepcionista amable..."
     system_prompt_template = Column(Text, nullable=False) 
