@@ -240,12 +240,16 @@ class EmailService:
         footer_text = getattr(client_settings, 'footer_text', None) or business_name
         
         # Logo HTML — prominente en el header
-        logo_url = getattr(client_settings, 'logo_url', None) if client_settings else None
-        # Solo generar tag de imagen si hay un logo URL válido (http/https)
-        if logo_url and logo_url.startswith('http'):
-            logo_html = f'<img src="{logo_url}" alt="{business_name}" style="max-height:70px; max-width:200px; margin-bottom:12px; display:block;">'
+        logo_path = getattr(client_settings, 'logo_url', None) if client_settings else None
+        # Construir URL completa: si ya es http, usarla tal cual; si es ruta relativa, armar con Supabase
+        if logo_path and logo_path.startswith('http'):
+            full_logo_url = logo_path
+        elif logo_path and settings.SUPABASE_PUBLIC_URL and settings.SUPABASE_BUCKET_LOGOS:
+            full_logo_url = f"{settings.SUPABASE_PUBLIC_URL}/{settings.SUPABASE_BUCKET_LOGOS}/{logo_path}"
         else:
-            logo_html = ''
+            full_logo_url = None
+        
+        logo_html = f'<img src="{full_logo_url}" alt="{business_name}" style="max-height:70px; max-width:200px; margin-bottom:12px; display:block;">' if full_logo_url else ''
         
         # Override de templates
         templates = getattr(client_settings, 'templates', {}) or {}

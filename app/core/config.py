@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     SUPABASE_S3_ENDPOINT: str | None = None
     SUPABASE_S3_REGION: str | None = None
     SUPABASE_BUCKET_CATALOGS: str | None = None
+    SUPABASE_BUCKET_LOGOS: str | None = None
+    SUPABASE_PUBLIC_URL: str | None = None
     CATALOG_PDF_CACHE_TTL_SECONDS: int
     
     # --- Bot ---
