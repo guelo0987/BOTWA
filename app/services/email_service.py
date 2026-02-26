@@ -241,7 +241,11 @@ class EmailService:
         
         # Logo HTML — prominente en el header
         logo_url = getattr(client_settings, 'logo_url', None) if client_settings else None
-        logo_html = f'<img src="{logo_url}" alt="{business_name}" style="max-height:70px; max-width:200px; margin-bottom:12px; display:block;">' if logo_url else ''
+        # Solo generar tag de imagen si hay un logo URL válido (http/https)
+        if logo_url and logo_url.startswith('http'):
+            logo_html = f'<img src="{logo_url}" alt="{business_name}" style="max-height:70px; max-width:200px; margin-bottom:12px; display:block;">'
+        else:
+            logo_html = ''
         
         # Override de templates
         templates = getattr(client_settings, 'templates', {}) or {}
@@ -353,7 +357,7 @@ class EmailService:
             subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else f"🔄 Cita Modificada - {business_name}"
             
             rows = _detail_row("📅", "Nueva fecha", fecha_formateada)
-            rows += _detail_row("💼", "Servicio", details.get('servicio'))
+            rows += _detail_row("�", "Servicio", details.get('servicio'))
             rows += _detail_row("👨‍⚕️", "Profesional", details.get('profesional'))
             rows += _detail_row("👥", "Personas", details.get('num_personas'))
             rows += _detail_row("🪑", "Área", details.get('area'))
@@ -414,16 +418,16 @@ class EmailService:
             subject = custom_subject.format(business_name=business_name, date=fecha_formateada) if custom_subject else default_subject
             
             rows = _detail_row("📅", "Fecha y hora", fecha_formateada)
-            rows += _detail_row("💅", "Servicio", details.get('servicio'))
+            rows += _detail_row("�", "Servicio", details.get('servicio'))
             rows += _detail_row("👤", "Profesional", details.get('profesional'))
             rows += _detail_row("💰", "Precio", details.get('precio'))
             
-            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Tu cita ha sido confirmada! ✨ Aquí están los detalles:</p>'
-            extra += '''<div style="margin-top:16px; padding:12px; background:#fdf2f8; border-radius:6px; text-align:center;">
-                <p style="margin:0; color:#9d174d; font-size:14px;">Llega <strong>5-10 minutos antes</strong> de tu cita 💖</p>
+            extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Tu cita ha sido confirmada! Aquí están los detalles:</p>'
+            extra += '''<div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:6px; text-align:center;">
+                <p style="margin:0; color:#1e40af; font-size:14px;">Llega <strong>5-10 minutos antes</strong> de tu cita</p>
             </div>'''
             
-            return _build_email("💇‍♀️", "Cita Confirmada", subject, rows, extra)
+            return _build_email("✅", "Cita Confirmada", subject, rows, extra)
             
         else:  # store u otros
             default_subject = f"✅ Confirmación - {business_name}"
