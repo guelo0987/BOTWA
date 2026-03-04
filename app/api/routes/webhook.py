@@ -429,6 +429,63 @@ async def handle_message(msg: ProcessedMessage):
         
         logger.debug(f"Client: {client.business_name}")
         
+        # 1.5. Verificar horario programado del bot
+        tools_config = client.tools_config or {}
+        if tools_config.get("bot_schedule_enabled"):
+            try:
+                import pytz
+                from datetime import datetime as dt
+                
+                tz_name = tools_config.get("timezone", "America/Santo_Domingo")
+                tz = pytz.timezone(tz_name)
+                now = dt.now(tz)
+                current_time_str = now.strftime("%H:%M")
+                
+                schedule_start = tools_config.get("bot_schedule_start", "08:00")
+                schedule_end = tools_config.get("bot_schedule_end", "18:00")
+                
+                # Comparar como strings HH:MM (funciona para rangos dentro del mismo día)
+                is_within_schedule = schedule_start <= current_time_str < schedule_end
+                
+                if not is_within_schedule:
+                    off_hours_mode = tools_config.get("bot_out_of_hours_mode", "off")
+                    logger.info(
+                        f"Bot fuera de horario para {client.business_name} "
+                        f"(actual={current_time_str}, rango={schedule_start}-{schedule_end}, modo={off_hours_mode})"
+                    )
+                    
+                    if off_hours_mode == "message":
+                        # Enviar mensaje personalizado de fuera de horario
+                        off_hours_message = tools_config.get(
+                            "bot_out_of_hours_message",
+                            f"Gracias por tu mensaje. Nuestro horario de atención es de {schedule_start} a {schedule_end}. Te responderemos lo antes posible."
+                        )
+                        
+                        # Deduplicar: no enviar el mensaje de fuera de horario si ya se envió recientemente
+                        try:
+                            redis = get_redis()
+                            ooh_key = f"ooh_sent:{client.id}:{msg.phone_number}"
+                            already_sent = await redis.get(ooh_key)
+                            if not already_sent:
+                                await whatsapp_service.send_text_message(
+                                    to=msg.phone_number,
+                                    message=off_hours_message,
+                                    access_token=wa_token,
+                                    phone_number_id=wa_phone_id,
+                                    api_version=wa_version,
+                                    client_id=client.id,
+                                )
+                                # No volver a enviar el mensaje por 30 minutos
+                                await redis.set(ooh_key, "1", ex=1800)
+                        except Exception as ooh_err:
+                            logger.warning(f"Error enviando mensaje fuera de horario: {ooh_err}")
+                    
+                    # En ambos modos ("off" y "message"), NO continuar con la IA
+                    return
+            except Exception as schedule_err:
+                logger.error(f"Error verificando horario del bot: {schedule_err}")
+                # Si falla la verificación, continuar normalmente para no bloquear el bot
+        
         # 2. Obtener o crear Customer
         customer = await client_service.get_or_create_customer(
             client_id=client.id,
