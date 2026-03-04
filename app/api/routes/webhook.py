@@ -114,7 +114,7 @@ async def receive_webhook(
                             if await redis.get(dedup_key):
                                 logger.debug(f"Mensaje duplicado ignorado: {message.id}")
                                 continue
-                            await redis.set(dedup_key, "1", ex=86400)  # 5 min TTL
+                            await redis.set(dedup_key, "1", ex=300)  # 5 min TTL
                         except Exception:
                             pass  # Si Redis falla, procesar de todos modos
                         
