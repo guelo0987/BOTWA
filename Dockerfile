@@ -28,18 +28,19 @@ COPY app/ ./app/
 # Switch to non-root user
 USER appuser
 
-# Cloud Run uses PORT env var (default 8080)
+# Cloud Run / Render uses PORT env var (default 8080)
 ENV PORT=8080
 EXPOSE ${PORT}
 
 # Production command: gunicorn with uvicorn workers
 # - workers: set to 1 for Cloud Run (each instance gets its own container)
 # - timeout: 120s to cover long Gemini calls
-CMD ["python", "-m", "gunicorn", \
-     "app.main:app", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--workers", "1", \
-     "--bind", "0.0.0.0:8080", \
-     "--timeout", "120", \
-     "--graceful-timeout", "30", \
-     "--access-logfile", "-"]
+# - Uses shell form so $PORT is expanded at runtime (Render sets its own PORT)
+CMD python -m gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 1 \
+    --bind "0.0.0.0:$PORT" \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile -
+
