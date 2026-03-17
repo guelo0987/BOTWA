@@ -10,6 +10,8 @@ engine = create_async_engine(
     pool_pre_ping=True,  # Verifica conexiones antes de usar
     pool_size=3,
     max_overflow=5,
+    pool_timeout=10,
+    pool_recycle=300,
     connect_args={
         "statement_cache_size": 0,  # Importante para Neon/PgBouncer
         "server_settings": {"jit": "off"}  # Optimización opcional
