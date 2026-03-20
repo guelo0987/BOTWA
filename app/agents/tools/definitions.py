@@ -706,18 +706,6 @@ class ToolExecutor:
                     precio_servicio = f"{currency}{srv['price']:,}"
                     descripcion_extra += f"\nPrecio: {precio_servicio}"
             
-            # CASO: Tienda con catálogo — buscar precio en catalog.categories[].products[]
-            if not precio_servicio and self.config.get("catalog"):
-                cats = self.config["catalog"].get("categories", [])
-                for cat in cats:
-                    for p in cat.get("products", []):
-                        if servicio and servicio.lower() in p.get("name", "").lower():
-                            precio_servicio = f"{currency}{p['price']:,}"
-                            descripcion_extra += f"\nPrecio: {precio_servicio}"
-                            break
-                    if precio_servicio:
-                        break
-
             # CASO: Tienda con delivery
             from app.services.client_service import client_service
             if self.business_type == "store":
@@ -848,16 +836,6 @@ class ToolExecutor:
             if evento:
                 # Guardar en BD
                 from app.models.tables import Appointment
-                # Extraer precio numérico para guardar en BD
-                raw_price = None
-                if precio_servicio:
-                    import re as _price_re
-                    digits = _price_re.sub(r'[^\d.]', '', precio_servicio.replace(',', ''))
-                    try:
-                        raw_price = float(digits) if digits else None
-                    except ValueError:
-                        raw_price = None
-
                 async with AsyncSessionLocal() as session:
                     appointment = Appointment(
                         client_id=self.client.id,
@@ -866,8 +844,7 @@ class ToolExecutor:
                         start_time=fecha,
                         end_time=fin,
                         status="CONFIRMED",
-                        notes=f"{servicio}{descripcion_extra}",
-                        total_price=raw_price
+                        notes=f"{servicio}{descripcion_extra}"
                     )
                     session.add(appointment)
                     await session.commit()
@@ -910,8 +887,7 @@ class ToolExecutor:
                 
                 hora_display = _format_time_ampm(hora_str)
                 if self.business_type == "store":
-                    precio_msg = f"\n💰 {precio_servicio}" if precio_servicio else ""
-                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📦 {servicio}{precio_msg}\n📍 {direccion or 'Pendiente'}{email_msg}\n\n¡Te esperamos!"
+                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📦 {servicio}\n📍 {direccion or 'Pendiente'}{email_msg}\n\n¡Te esperamos!"
                 elif self.business_type == "restaurant":
                     area_msg = f"\n🪑 Área: {area}" if area else ""
                     ocasion_msg = f"\n🎉 Ocasión: {ocasion}" if ocasion else ""

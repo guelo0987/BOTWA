@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, JSON, Numeric
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -119,9 +119,6 @@ class Appointment(Base):
     
     # Detalles extra (Motivo consulta / Mesa reservada)
     notes = Column(Text, nullable=True)
-
-    # Precio total (producto/servicio)
-    total_price = Column(Numeric(12, 2), nullable=True)
     
     client = relationship("Client", back_populates="appointments")
     customer = relationship("Customer", back_populates="appointments")
