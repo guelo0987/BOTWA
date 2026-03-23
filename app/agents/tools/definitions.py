@@ -723,7 +723,7 @@ class ToolExecutor:
                     profs_list = ", ".join([p["name"] for p in self.config["professionals"]])
                     return f"No encontré a '{profesional_id}'. Los profesionales disponibles son: {profs_list}"
             
-            # CASO: Salón con servicio
+            # CASO: Salón/Clínica con servicio
             if self.config.get("services"):
                 srv = next((s for s in self.config["services"] if servicio.lower() in s["name"].lower()), None)
                 if srv:
@@ -731,15 +731,54 @@ class ToolExecutor:
                     servicio = srv["name"]
                     precio_servicio = f"{currency}{srv['price']:,}"
                     descripcion_extra += f"\nPrecio: {precio_servicio}"
-            
+
             # CASO: Tienda con delivery
             from app.services.client_service import client_service
             if self.business_type == "store":
                 duration = self.config.get("delivery_duration", 60)
+
+                # Buscar precio del producto en el catálogo
+                producto_precio = None
+                if not precio_servicio and self.config.get("catalog"):
+                    for cat in self.config["catalog"].get("categories", []):
+                        for prod in cat.get("products", []):
+                            if prod["name"].lower() in servicio.lower() or servicio.lower() in prod["name"].lower():
+                                producto_precio = prod.get("price")
+                                break
+                        if producto_precio:
+                            break
+
+                # Extraer costo de envío del campo detalles (el AI pasa "Costo de envío: RD$750")
+                delivery_fee = None
+                if detalles:
+                    fee_match = _re.search(r'(?:envío|envio|delivery|flete)[:\s]*(?:RD)?\$?\s*([\d,\.]+)', detalles, _re.IGNORECASE)
+                    if fee_match:
+                        try:
+                            delivery_fee = float(fee_match.group(1).replace(',', ''))
+                        except (ValueError, TypeError):
+                            pass
+
+                # Si no se encontró en detalles, intentar con delivery_fee del config
+                if delivery_fee is None:
+                    delivery_fee = self.config.get("delivery_fee")
+
+                # Calcular precio total: producto + envío
+                if producto_precio is not None:
+                    total = producto_precio + (delivery_fee or 0)
+                    precio_servicio = f"{currency}{total:,.2f}"
+                    descripcion_extra += f"\nPrecio producto: {currency}{producto_precio:,.2f}"
+                    if delivery_fee:
+                        descripcion_extra += f"\nCosto envío: {currency}{delivery_fee:,.2f}"
+                    descripcion_extra += f"\nTotal: {precio_servicio}"
+                elif delivery_fee:
+                    # Solo envío (producto no encontrado en catálogo pero AI lo conoce)
+                    precio_servicio = f"{currency}{delivery_fee:,.2f}"
+                    descripcion_extra += f"\nCosto envío: {precio_servicio}"
+
                 if direccion:
                     descripcion_extra += f"\n📍 Dirección: {direccion}"
                     await client_service.update_customer_data(self.customer.id, {"direccion": direccion})
-            
+
             # CASO: Restaurante
             if num_personas:
                 descripcion_extra += f"\n👥 Personas: {num_personas}"

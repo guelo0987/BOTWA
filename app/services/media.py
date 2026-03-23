@@ -231,12 +231,14 @@ Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
 
 INSTRUCCIONES:
 1. Describe brevemente qué ves en la imagen
-2. Si es un producto que parece estar en nuestro catálogo, identifícalo y menciona el precio
-3. Si es una consulta sobre algo que vendemos/ofrecemos, da información útil
-4. Si no puedes identificar el producto exacto, sugiere opciones similares del catálogo
-5. Sé amable y ofrece ayuda adicional
+2. Si la imagen muestra un producto, modelo o captura de pantalla de nuestro catálogo, identifícalo con exactitud.
+   - Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [nombre exacto del producto del catálogo]" seguido del precio.
+   - Si ves medidas, tamaños o variantes, inclúyelos (ej: "PRODUCTO IDENTIFICADO: Base Encajonada Modelo Duke 80x80 - $24,500")
+   - IMPORTANTE: Si la imagen es una captura o foto del catálogo del negocio, ES un producto válido. Identifícalo.
+3. Si NO puedes identificar el producto exacto pero ves algo similar al catálogo, sugiere las opciones más cercanas
+4. Solo di que no reconoces el producto si la imagen claramente NO tiene relación con los productos del negocio
 
-Responde en español, de forma concisa y útil para WhatsApp (usa *negritas* y emojis moderadamente)."""
+Responde en español, de forma concisa. Tu análisis será usado por el chat principal para ayudar al cliente."""
 
             # Llamar a Gemini con la imagen
             response = await self.client.aio.models.generate_content(

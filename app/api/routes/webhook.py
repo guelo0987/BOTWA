@@ -285,10 +285,87 @@ async def debounced_handle_message(msg: ProcessedMessage):
     Esto evita que el bot responda a "alma rosa 1" y "f.miguelmatias30@gmail.com"
     como dos conversaciones separadas.
     """
-    # Si es audio, imagen o documento, procesar inmediatamente (no se puede combinar)
-    if msg.message_type in ("audio", "image", "document"):
+    # Audio y documentos: procesar inmediatamente (no se pueden combinar con texto)
+    if msg.message_type in ("audio", "document"):
         await handle_message(msg)
         return
+
+    # Imágenes: usar debounce corto para capturar texto que acompañe la imagen
+    # (ej: usuario envía foto + "Me interesa esta" al mismo tiempo)
+    if msg.message_type == "image":
+        try:
+            redis = get_redis()
+            debounce_key = f"debounce:{msg.phone_number_id}:{msg.phone_number}"
+            gen_key = f"debounce_gen:{msg.phone_number_id}:{msg.phone_number}"
+
+            msg_data = json.dumps({
+                "content": msg.content,
+                "message_id": msg.message_id,
+                "message_type": msg.message_type,
+                "phone_number": msg.phone_number,
+                "phone_number_id": msg.phone_number_id,
+                "contact_name": msg.contact_name,
+                "media_id": msg.media_id,
+                "timestamp": time.time()
+            })
+
+            await redis.rpush(debounce_key, msg_data)
+            await redis.expire(debounce_key, 30)
+
+            my_gen = await redis.incr(gen_key)
+            await redis.expire(gen_key, 30)
+
+            # Espera corta para capturar texto que venga junto con la imagen
+            await asyncio.sleep(3)
+
+            current_gen = await redis.get(gen_key)
+            if current_gen and int(current_gen) != my_gen:
+                return  # Otro mensaje llegó, dejamos que ese se encargue
+
+            pending_msgs = await redis.lrange(debounce_key, 0, -1)
+            await redis.delete(debounce_key)
+            await redis.delete(gen_key)
+
+            if not pending_msgs:
+                return
+
+            messages = [json.loads(m) for m in pending_msgs]
+
+            # Buscar el mensaje de imagen para preservar media_id
+            image_msg = next((m for m in messages if m["message_type"] == "image"), None)
+            text_parts = [m["content"] for m in messages if m["message_type"] == "text" and m["content"]]
+
+            # Combinar: caption de imagen + textos adicionales
+            if image_msg:
+                caption = image_msg["content"] or ""
+                if text_parts:
+                    caption = (caption + "\n" + "\n".join(text_parts)).strip()
+                combined_msg = ProcessedMessage(
+                    message_id=messages[-1]["message_id"],
+                    phone_number=msg.phone_number,
+                    phone_number_id=msg.phone_number_id,
+                    contact_name=msg.contact_name,
+                    message_type="image",
+                    content=caption or "[Imagen recibida]",
+                    media_id=image_msg.get("media_id"),
+                )
+            else:
+                combined_msg = ProcessedMessage(
+                    message_id=messages[-1]["message_id"],
+                    phone_number=msg.phone_number,
+                    phone_number_id=msg.phone_number_id,
+                    contact_name=msg.contact_name,
+                    message_type="text",
+                    content="\n".join(text_parts),
+                    media_id=None,
+                )
+
+            await handle_message(combined_msg)
+            return
+        except Exception as e:
+            logger.warning(f"Debounce de imagen fallido, procesando directo: {e}")
+            await handle_message(msg)
+            return
     
     try:
         redis = get_redis()
