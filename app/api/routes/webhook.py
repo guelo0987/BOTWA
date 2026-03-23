@@ -106,13 +106,16 @@ async def receive_webhook(
                 
                 # Procesar mensajes entrantes
                 if change.field == "messages" and value.messages:
+                    msg_count = len(value.messages)
+                    msg_types = [m.type for m in value.messages]
+                    logger.info(f"Webhook: {msg_count} mensaje(s) recibido(s), tipos={msg_types}")
                     for message in value.messages:
                         # --- DEDUPLICACIÓN ---
                         try:
                             redis = get_redis()
                             dedup_key = f"processed:{message.id}"
                             if await redis.get(dedup_key):
-                                logger.debug(f"Mensaje duplicado ignorado: {message.id}")
+                                logger.info(f"Webhook: mensaje duplicado ignorado: {message.id}")
                                 continue
                             await redis.set(dedup_key, "1", ex=300)  # 5 min TTL
                         except Exception:
@@ -287,86 +290,13 @@ async def debounced_handle_message(msg: ProcessedMessage):
     """
     # Audio y documentos: procesar inmediatamente (no se pueden combinar con texto)
     if msg.message_type in ("audio", "document"):
+        logger.info(f"Debounce: bypass para {msg.message_type} de {msg.phone_number} (msg_id={msg.message_id})")
         await handle_message(msg)
         return
 
-    # Imágenes: usar debounce corto para capturar texto que acompañe la imagen
-    # (ej: usuario envía foto + "Me interesa esta" al mismo tiempo)
-    if msg.message_type == "image":
-        try:
-            redis = get_redis()
-            debounce_key = f"debounce:{msg.phone_number_id}:{msg.phone_number}"
-            gen_key = f"debounce_gen:{msg.phone_number_id}:{msg.phone_number}"
+    # Imágenes y texto van al mismo debounce para combinarse correctamente
+    logger.info(f"Debounce: encolando {msg.message_type} de {msg.phone_number} (msg_id={msg.message_id})")
 
-            msg_data = json.dumps({
-                "content": msg.content,
-                "message_id": msg.message_id,
-                "message_type": msg.message_type,
-                "phone_number": msg.phone_number,
-                "phone_number_id": msg.phone_number_id,
-                "contact_name": msg.contact_name,
-                "media_id": msg.media_id,
-                "timestamp": time.time()
-            })
-
-            await redis.rpush(debounce_key, msg_data)
-            await redis.expire(debounce_key, 30)
-
-            my_gen = await redis.incr(gen_key)
-            await redis.expire(gen_key, 30)
-
-            # Espera corta para capturar texto que venga junto con la imagen
-            await asyncio.sleep(3)
-
-            current_gen = await redis.get(gen_key)
-            if current_gen and int(current_gen) != my_gen:
-                return  # Otro mensaje llegó, dejamos que ese se encargue
-
-            pending_msgs = await redis.lrange(debounce_key, 0, -1)
-            await redis.delete(debounce_key)
-            await redis.delete(gen_key)
-
-            if not pending_msgs:
-                return
-
-            messages = [json.loads(m) for m in pending_msgs]
-
-            # Buscar el mensaje de imagen para preservar media_id
-            image_msg = next((m for m in messages if m["message_type"] == "image"), None)
-            text_parts = [m["content"] for m in messages if m["message_type"] == "text" and m["content"]]
-
-            # Combinar: caption de imagen + textos adicionales
-            if image_msg:
-                caption = image_msg["content"] or ""
-                if text_parts:
-                    caption = (caption + "\n" + "\n".join(text_parts)).strip()
-                combined_msg = ProcessedMessage(
-                    message_id=messages[-1]["message_id"],
-                    phone_number=msg.phone_number,
-                    phone_number_id=msg.phone_number_id,
-                    contact_name=msg.contact_name,
-                    message_type="image",
-                    content=caption or "[Imagen recibida]",
-                    media_id=image_msg.get("media_id"),
-                )
-            else:
-                combined_msg = ProcessedMessage(
-                    message_id=messages[-1]["message_id"],
-                    phone_number=msg.phone_number,
-                    phone_number_id=msg.phone_number_id,
-                    contact_name=msg.contact_name,
-                    message_type="text",
-                    content="\n".join(text_parts),
-                    media_id=None,
-                )
-
-            await handle_message(combined_msg)
-            return
-        except Exception as e:
-            logger.warning(f"Debounce de imagen fallido, procesando directo: {e}")
-            await handle_message(msg)
-            return
-    
     try:
         redis = get_redis()
         # Key única por usuario (client_phone_id + user_phone)
@@ -392,16 +322,18 @@ async def debounced_handle_message(msg: ProcessedMessage):
         my_gen = await redis.incr(gen_key)
         await redis.expire(gen_key, 30)
         
-        logger.debug(f"Debounce: msg encolado para {msg.phone_number}, gen={my_gen}")
-        
+        logger.info(f"Debounce: msg encolado para {msg.phone_number}, gen={my_gen}, type={msg.message_type}")
+
         # Esperar a que lleguen más mensajes
         await asyncio.sleep(DEBOUNCE_SECONDS)
-        
+
         # Verificar si somos la última generación (si no, otro mensaje llegó después)
         current_gen = await redis.get(gen_key)
         if current_gen and int(current_gen) != my_gen:
-            logger.debug(f"Debounce: gen {my_gen} descartada (actual={current_gen}) para {msg.phone_number}")
+            logger.info(f"Debounce: gen {my_gen} descartada (actual={current_gen}) para {msg.phone_number}")
             return  # Otro mensaje llegó después, dejamos que ese se encargue
+
+        logger.info(f"Debounce: gen {my_gen} procesando para {msg.phone_number}")
         
         # Somos la última generación: recoger todos los mensajes pendientes
         pending_msgs = await redis.lrange(debounce_key, 0, -1)
@@ -413,24 +345,42 @@ async def debounced_handle_message(msg: ProcessedMessage):
         
         # Combinar todos los mensajes en uno solo
         messages = [json.loads(m) for m in pending_msgs]
-        
-        if len(messages) == 1:
+
+        # Detectar si hay una imagen en los mensajes agrupados
+        image_msg = next((m for m in messages if m["message_type"] == "image"), None)
+
+        if image_msg:
+            # Combinar: imagen + cualquier texto que la acompañe
+            text_parts = [m["content"] for m in messages if m["message_type"] == "text" and m.get("content")]
+            caption = image_msg.get("content") or ""
+            if text_parts:
+                caption = (caption + "\n" + "\n".join(text_parts)).strip()
+            combined_content = caption or "[Imagen recibida]"
+            combined_type = "image"
+            combined_media_id = image_msg.get("media_id")
+            logger.info(f"Debounce: combinando imagen + {len(text_parts)} textos de {msg.phone_number}: {combined_content[:100]}...")
+        elif len(messages) == 1:
             # Solo un mensaje, procesar normal
             combined_content = messages[0]["content"]
+            combined_type = messages[0]["message_type"]
+            combined_media_id = messages[0].get("media_id")
+            logger.info(f"Debounce: 1 mensaje ({combined_type}) de {msg.phone_number}: {combined_content[:80]}...")
         else:
-            # Múltiples mensajes: combinar
+            # Múltiples mensajes de texto: combinar
             combined_content = "\n".join([m["content"] for m in messages if m["content"]])
+            combined_type = "text"
+            combined_media_id = None
             logger.info(f"Debounce: combinando {len(messages)} mensajes de {msg.phone_number}: {combined_content[:100]}...")
-        
-        # Crear un ProcessedMessage combinado usando los datos del último mensaje
+
+        # Crear un ProcessedMessage combinado
         combined_msg = ProcessedMessage(
-            message_id=messages[-1]["message_id"],  # Último message_id
+            message_id=messages[-1]["message_id"],
             phone_number=msg.phone_number,
             phone_number_id=msg.phone_number_id,
             contact_name=msg.contact_name,
-            message_type="text",
+            message_type=combined_type,
             content=combined_content,
-            media_id=None
+            media_id=combined_media_id
         )
         
         # Marcar como leído todos los mensajes individuales
@@ -464,26 +414,26 @@ async def handle_message(msg: ProcessedMessage):
     Soporta texto, audio y documentos.
     """
     try:
-        # 0. Lock de procesamiento: evitar que dos mensajes del mismo usuario
-        #    se procesen simultáneamente con la IA
+        # 0. Lock de procesamiento + response guard para evitar respuestas duplicadas
         try:
             redis = get_redis()
             lock_key = f"processing:{msg.phone_number_id}:{msg.phone_number}"
+            response_guard_key = f"response_guard:{msg.phone_number_id}:{msg.phone_number}"
+
+            # Response guard: si ya respondimos hace menos de 8s, descartar
+            recently_responded = await redis.get(response_guard_key)
+            if recently_responded:
+                logger.info(f"Response guard activo para {msg.phone_number}, descartando para evitar duplicado")
+                return
+
             # Intentar adquirir lock con TTL de 60s (seguridad)
             acquired = await redis.set(lock_key, "1", nx=True, ex=60)
             if not acquired:
-                # Ya hay un mensaje procesándose para este usuario
-                # Esperar a que termine (máximo 30s)
-                for _ in range(60):  # 60 * 0.5s = 30s máximo
-                    await asyncio.sleep(0.5)
-                    if not await redis.exists(lock_key):
-                        break
-                # Intentar de nuevo
-                acquired = await redis.set(lock_key, "1", nx=True, ex=60)
-                if not acquired:
-                    # El mensaje anterior ya cubrió este usuario — descartar para evitar respuesta doble
-                    logger.warning(f"Lock no adquirido para {msg.phone_number} después de esperar, descartando mensaje")
-                    return
+                # Ya hay un mensaje procesándose para este usuario — descartar
+                logger.warning(f"Lock ya adquirido para {msg.phone_number}, descartando mensaje duplicado")
+                return
+
+            logger.info(f"handle_message: lock adquirido para {msg.phone_number}, type={msg.message_type}, msg_id={msg.message_id}")
         except Exception:
             pass  # Si Redis falla, continuar sin lock
         
@@ -629,7 +579,20 @@ async def handle_message(msg: ProcessedMessage):
             
             # Construir mensaje con contexto claro para el chat principal
             original_caption = msg.content if msg.content and msg.content != "[Imagen recibida]" else ""
-            if original_caption:
+
+            # Detectar si el análisis identificó un producto del catálogo
+            producto_identificado = "PRODUCTO IDENTIFICADO" in image_analysis.upper()
+
+            if producto_identificado:
+                # El producto FUE identificado — tratar como consulta válida del catálogo
+                user_message = (
+                    f"[El cliente envió una foto de un producto de nuestro catálogo"
+                    f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
+                    f"[Análisis de la imagen: {image_analysis}]\n\n"
+                    f"IMPORTANTE: La imagen SÍ es de nuestro catálogo. El producto fue identificado. "
+                    f"Responde con precios, disponibilidad y ofrece ayuda para agendar la entrega."
+                )
+            elif original_caption:
                 user_message = (
                     f"[El cliente envió una imagen con el mensaje: \"{original_caption}\"]\n\n"
                     f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
@@ -690,7 +653,6 @@ async def handle_message(msg: ProcessedMessage):
         )
         
         # 8. Enviar respuesta
-        # 8. Enviar respuesta
         result = await whatsapp_service.send_text_message(
             to=msg.phone_number,
             message=response_text,
@@ -706,10 +668,18 @@ async def handle_message(msg: ProcessedMessage):
             if sent_msg_id:
                 await memory.save_sent_message_id(sent_msg_id)
         
+        # 8.6 Response guard: evitar que otro handle_message responda de nuevo
+        try:
+            redis = get_redis()
+            response_guard_key = f"response_guard:{msg.phone_number_id}:{msg.phone_number}"
+            await redis.set(response_guard_key, "1", ex=8)  # 8s guard (debounce es 10s)
+        except Exception:
+            pass
+
         # 9. Guardar respuesta en memoria
         await memory.add_message("assistant", response_text)
-        
-        logger.debug(f"Conversación completada con {msg.phone_number}")
+
+        logger.info(f"handle_message: completado para {msg.phone_number}, type={msg.message_type}")
         
     except Exception as e:
         logger.error(f"Error manejando mensaje: {e}", exc_info=True)
