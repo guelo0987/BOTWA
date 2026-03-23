@@ -589,8 +589,10 @@ async def handle_message(msg: ProcessedMessage):
                     f"[El cliente envió una foto de un producto de nuestro catálogo"
                     f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
                     f"[Análisis de la imagen: {image_analysis}]\n\n"
-                    f"IMPORTANTE: La imagen SÍ es de nuestro catálogo. El producto fue identificado. "
-                    f"Responde con precios, disponibilidad y ofrece ayuda para agendar la entrega."
+                    f"IMPORTANTE: La imagen SÍ es de nuestro catálogo. El producto fue identificado con los precios exactos del análisis. "
+                    f"NO envíes saludo de bienvenida ni link del catálogo — el cliente YA tiene el catálogo y está preguntando por un producto específico. "
+                    f"Usa los precios y el nombre del producto EXACTAMENTE como aparecen en el análisis de la imagen (no uses otros precios). "
+                    f"Responde directamente con la info del producto y ofrece ayuda al cliente."
                 )
             elif original_caption:
                 user_message = (

@@ -182,28 +182,30 @@ class MediaService:
             
             # Construir contexto del negocio para el análisis
             context_parts = []
-            
-            # Catálogo de productos
-            if 'catalog' in business_context:
+            catalog_is_pdf = business_context.get('catalog_source') == 'pdf'
+
+            # Catálogo de productos (solo si es manual, no PDF)
+            if not catalog_is_pdf and 'catalog' in business_context:
                 categories = business_context['catalog'].get('categories', [])
                 if categories:
                     productos = []
                     for cat in categories:
                         for prod in cat.get('products', []):
                             precio = prod.get('price', 'N/A')
-                            productos.append(f"- {prod['name']}: ${precio}")
+                            if prod['name'] != 'Producto' or precio != 0:  # Ignorar placeholder
+                                productos.append(f"- {prod['name']}: ${precio}")
                     if productos:
-                        context_parts.append(f"CATÁLOGO DE PRODUCTOS:\n" + "\n".join(productos[:20]))  # Limitar a 20
-            
+                        context_parts.append(f"CATÁLOGO DE PRODUCTOS:\n" + "\n".join(productos[:20]))
+
             # Servicios
             if 'services' in business_context:
                 servicios = []
                 for s in business_context['services']:
-                    if s.get('price', 0) > 0:  # Solo servicios reales
+                    if s.get('price', 0) > 0:
                         servicios.append(f"- {s['name']}: ${s['price']}")
                 if servicios:
                     context_parts.append(f"SERVICIOS DISPONIBLES:\n" + "\n".join(servicios[:10]))
-            
+
             # Profesionales
             if 'professionals' in business_context:
                 profs = []
@@ -211,20 +213,41 @@ class MediaService:
                     profs.append(f"- {p['name']} ({p.get('specialty', 'General')})")
                 if profs:
                     context_parts.append(f"PROFESIONALES:\n" + "\n".join(profs))
-            
+
             # Nombre del negocio
             business_name = business_context.get('business_name', 'el negocio')
             business_type = business_context.get('business_type', 'general')
-            
-            context_text = "\n\n".join(context_parts) if context_parts else "No hay catálogo específico configurado."
-            
+
+            context_text = "\n\n".join(context_parts) if context_parts else ""
+
             # Prompt para Gemini Vision
             user_caption = f'\n\nEl usuario dice: "{caption}"' if caption and caption != "[Imagen recibida]" else ""
-            
-            prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
 
-CONTEXTO DEL NEGOCIO:
-{context_text}
+            if catalog_is_pdf:
+                # Para catálogos PDF: el modelo no tiene la lista de productos,
+                # debe leer EXACTAMENTE lo que aparece en la imagen
+                prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
+
+El catálogo de este negocio está en un PDF. NO tienes la lista de productos aquí.
+Tu trabajo es LEER con precisión lo que aparece en la imagen.
+
+TAREA:
+Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
+
+INSTRUCCIONES CRÍTICAS:
+1. Lee el TÍTULO EXACTO del producto tal como aparece en la imagen, incluyendo cualquier variante, modificador o subtipo que se muestre
+2. Lee TODOS los precios, medidas, tamaños o variantes que aparezcan, exactamente como están escritos
+3. Si ves un nombre de modelo o línea, inclúyelo tal cual
+4. Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [título/nombre exacto como aparece en la imagen]"
+5. Luego lista TODOS los precios y variantes visibles en la imagen, copiándolos textualmente
+
+IMPORTANTE: Lee el texto de la imagen LITERALMENTE. No inventes precios, no cambies nombres, no omitas palabras del título. Copia exactamente lo que ves.
+
+Responde en español, de forma concisa."""
+            else:
+                prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
+
+{"CONTEXTO DEL NEGOCIO:" + chr(10) + context_text if context_text else ""}
 
 TAREA:
 Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
@@ -232,11 +255,14 @@ Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
 INSTRUCCIONES:
 1. Describe brevemente qué ves en la imagen
 2. Si la imagen muestra un producto, modelo o captura de pantalla de nuestro catálogo, identifícalo con exactitud.
-   - Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [nombre exacto del producto del catálogo]" seguido del precio.
-   - Si ves medidas, tamaños o variantes, inclúyelos (ej: "PRODUCTO IDENTIFICADO: Base Encajonada Modelo Duke 80x80 - $24,500")
+   - Lee el nombre/título EXACTO del producto tal como aparece en la imagen, incluyendo variantes o modificadores.
+   - Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [nombre exacto como aparece en la imagen]" seguido del precio.
+   - Si ves medidas, tamaños o variantes, inclúyelos
    - IMPORTANTE: Si la imagen es una captura o foto del catálogo del negocio, ES un producto válido. Identifícalo.
 3. Si NO puedes identificar el producto exacto pero ves algo similar al catálogo, sugiere las opciones más cercanas
 4. Solo di que no reconoces el producto si la imagen claramente NO tiene relación con los productos del negocio
+
+IMPORTANTE: Lee el texto de la imagen LITERALMENTE. No cambies nombres ni precios.
 
 Responde en español, de forma concisa. Tu análisis será usado por el chat principal para ayudar al cliente."""
 
@@ -256,8 +282,8 @@ Responde en español, de forma concisa. Tu análisis será usado por el chat pri
                     )
                 ],
                 config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=500,
+                    temperature=0.2 if catalog_is_pdf else 0.7,
+                    max_output_tokens=600,
                 )
             )
             
