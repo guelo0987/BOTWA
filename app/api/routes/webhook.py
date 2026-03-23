@@ -404,9 +404,9 @@ async def handle_message(msg: ProcessedMessage):
                 # Intentar de nuevo
                 acquired = await redis.set(lock_key, "1", nx=True, ex=60)
                 if not acquired:
-                    logger.warning(f"Lock no adquirido para {msg.phone_number} después de esperar")
-                    # Forzar el lock (el anterior probablemente expiró)
-                    await redis.set(lock_key, "1", ex=60)
+                    # El mensaje anterior ya cubrió este usuario — descartar para evitar respuesta doble
+                    logger.warning(f"Lock no adquirido para {msg.phone_number} después de esperar, descartando mensaje")
+                    return
         except Exception:
             pass  # Si Redis falla, continuar sin lock
         

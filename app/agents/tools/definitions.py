@@ -220,7 +220,7 @@ TOOL_DEFINITIONS = [
             ),
             types.FunctionDeclaration(
                 name="modificar_cita",
-                description="""Modifica o reagenda una cita existente a una nueva fecha/hora.
+                description="""Modifica o reagenda una cita existente. Puede cambiar fecha/hora, servicio/producto, o ambos.
                 Busca la cita por fecha/profesional y la actualiza.""",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
@@ -240,6 +240,10 @@ TOOL_DEFINITIONS = [
                         "hora_nueva": types.Schema(
                             type=types.Type.STRING,
                             description="Nueva hora en formato HH:MM en 24 horas. SIEMPRE usa 24h: 6 PM = 18:00, 1 PM = 13:00"
+                        ),
+                        "servicio": types.Schema(
+                            type=types.Type.STRING,
+                            description="Nuevo servicio o producto si el cliente quiere cambiar lo que tenía agendado (opcional, solo si cambia)"
                         ),
                         "profesional_id": types.Schema(
                             type=types.Type.STRING,
@@ -558,41 +562,63 @@ class ToolExecutor:
             
             if not calendar_id:
                 return "No hay calendario configurado para este servicio."
-            
+
             # Import aquí para evitar circular import
             from app.services.calendar import calendar_service
-            
-            # Obtener slots
-            # Si forzar_horario, usar ventana amplia para mostrar slots fuera de horario normal
-            effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
-            config_for_calendar = {
-                **self.config,
-                "business_hours": effective_hours,
-                "slot_duration": duration
-            }
-            
-            slots = await calendar_service.get_available_slots(
-                calendar_id=calendar_id,
-                date=fecha,
-                duration_minutes=duration,
-                config=config_for_calendar
-            )
-            
+
+            allow_overlapping = self.config.get("allow_overlapping_appointments", False)
+
+            # Si overlapping está habilitado, generar slots dentro del horario sin consultar Google Calendar
+            if allow_overlapping:
+                effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
+                start_h, start_m = map(int, effective_hours["start"].split(':'))
+                end_h, end_m = map(int, effective_hours["end"].split(':'))
+                start_min = start_h * 60 + start_m
+                end_min = end_h * 60 + end_m
+
+                slots = []
+                current = start_min
+                while current + duration <= end_min:
+                    slot_end = current + duration
+                    slots.append({
+                        "start": f"{current // 60:02d}:{current % 60:02d}",
+                        "end": f"{slot_end // 60:02d}:{slot_end % 60:02d}",
+                    })
+                    current = slot_end
+
+                logger.info(f"buscar_disponibilidad: overlapping habilitado, {len(slots)} slots generados sin verificar conflictos")
+            else:
+                # Obtener slots verificando conflictos en Google Calendar
+                # Si forzar_horario, usar ventana amplia para mostrar slots fuera de horario normal
+                effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
+                config_for_calendar = {
+                    **self.config,
+                    "business_hours": effective_hours,
+                    "slot_duration": duration
+                }
+
+                slots = await calendar_service.get_available_slots(
+                    calendar_id=calendar_id,
+                    date=fecha,
+                    duration_minutes=duration,
+                    config=config_for_calendar
+                )
+
             if not slots:
                 return f"No hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Probamos otra fecha?"
-            
+
             # DEBUG: log completo de slots para diagnosticar
             logger.info(
                 f"buscar_disponibilidad: {len(slots)} slots en {fecha_str}. "
                 f"calendar_id={calendar_id}, duration={duration}min. "
                 f"Slots=[{', '.join(s['start']+'-'+s['end'] for s in slots)}]"
             )
-            
+
             # Mostrar slots individualmente para que el usuario pueda elegir
             result = f"📅 Horarios disponibles para el {fecha.strftime('%d de %B de %Y')}:\n\n"
             for s in slots:
                 result += f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}\n"
-            
+
             result += "\n¿Cuál de estos horarios te gustaría?"
             return result
             
@@ -753,70 +779,77 @@ class ToolExecutor:
             # VERIFICAR DISPONIBILIDAD DEL SLOT ESPECÍFICO
             # ==========================================
             from app.services.calendar import calendar_service
-            
-            # working_hours ya tiene el override del profesional si aplica
-            
-            # Obtener configuración para el calendario específico
-            # Si forzar_horario, usar ventana amplia para permitir slots fuera de horario normal
-            effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
-            config_for_calendar = {
-                **self.config,
-                "business_hours": effective_hours,
-                "slot_duration": duration
-            }
-            
-            # Obtener slots disponibles para esa fecha
-            fecha_date = fecha.date()
-            slots_disponibles = await calendar_service.get_available_slots(
-                calendar_id=calendar_id,
-                date=fecha_date,
-                duration_minutes=duration,
-                config=config_for_calendar
-            )
-            
-            # Verificar si el horario solicitado está en los slots disponibles
-            hora_solicitada = fecha.strftime('%H:%M')
-            slot_disponible = False
-            
-            # DEBUG: log completo para diagnosticar problemas de horario
-            logger.info(
-                f"crear_cita: verificando {hora_solicitada} en {len(slots_disponibles)} slots disponibles. "
-                f"calendar_id={calendar_id}, fecha={fecha_str}, duration={duration}min"
-            )
-            if slots_disponibles:
-                logger.info(f"crear_cita: slots=[{', '.join(s['start']+'-'+s['end'] for s in slots_disponibles)}]")
-            
-            for slot in slots_disponibles:
-                slot_start = slot.get('start', '')
-                slot_end = slot.get('end', '')
-                # Verificar si la hora solicitada cae dentro de algún slot disponible
-                # Solo validamos que el INICIO esté en un slot libre.
-                # Google Calendar se encarga de validar conflictos reales.
-                if slot_start and slot_end:
-                    s_h, s_m = map(int, slot_start.split(':'))
-                    e_h, e_m = map(int, slot_end.split(':'))
-                    r_h, r_m = map(int, hora_solicitada.split(':'))
-                    slot_start_min = s_h * 60 + s_m
-                    slot_end_min = e_h * 60 + e_m
-                    requested_min = r_h * 60 + r_m
-                    # La hora de inicio debe caer dentro de algún slot libre
-                    if requested_min >= slot_start_min and requested_min < slot_end_min:
-                        slot_disponible = True
-                        logger.info(f"crear_cita: MATCH hora={hora_solicitada} en slot {slot_start}-{slot_end}")
-                        break
-            
-            if not slot_disponible:
-                logger.warning(
-                    f"crear_cita: hora {hora_solicitada} NO disponible. "
-                    f"Slots disponibles: {[s['start']+'-'+s['end'] for s in slots_disponibles]}"
+
+            allow_overlapping = self.config.get("allow_overlapping_appointments", False)
+
+            if allow_overlapping:
+                # Solo validar que esté dentro del horario laboral (no verificar conflictos con otros eventos)
+                hora_solicitada = fecha.strftime('%H:%M')
+                logger.info(f"crear_cita: overlapping habilitado, saltando verificación de conflictos para {hora_solicitada}")
+            else:
+                # working_hours ya tiene el override del profesional si aplica
+
+                # Obtener configuración para el calendario específico
+                # Si forzar_horario, usar ventana amplia para permitir slots fuera de horario normal
+                effective_hours = {"start": "06:00", "end": "23:00"} if forzar else working_hours
+                config_for_calendar = {
+                    **self.config,
+                    "business_hours": effective_hours,
+                    "slot_duration": duration
+                }
+
+                # Obtener slots disponibles para esa fecha
+                fecha_date = fecha.date()
+                slots_disponibles = await calendar_service.get_available_slots(
+                    calendar_id=calendar_id,
+                    date=fecha_date,
+                    duration_minutes=duration,
+                    config=config_for_calendar
                 )
-                # Formatear slots disponibles para mostrar al usuario
-                slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
+
+                # Verificar si el horario solicitado está en los slots disponibles
+                hora_solicitada = fecha.strftime('%H:%M')
+                slot_disponible = False
+
+                # DEBUG: log completo para diagnosticar problemas de horario
+                logger.info(
+                    f"crear_cita: verificando {hora_solicitada} en {len(slots_disponibles)} slots disponibles. "
+                    f"calendar_id={calendar_id}, fecha={fecha_str}, duration={duration}min"
+                )
                 if slots_disponibles:
-                    return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
-                else:
-                    return f"❌ Lo siento, no hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
-            
+                    logger.info(f"crear_cita: slots=[{', '.join(s['start']+'-'+s['end'] for s in slots_disponibles)}]")
+
+                for slot in slots_disponibles:
+                    slot_start = slot.get('start', '')
+                    slot_end = slot.get('end', '')
+                    # Verificar si la hora solicitada cae dentro de algún slot disponible
+                    # Solo validamos que el INICIO esté en un slot libre.
+                    # Google Calendar se encarga de validar conflictos reales.
+                    if slot_start and slot_end:
+                        s_h, s_m = map(int, slot_start.split(':'))
+                        e_h, e_m = map(int, slot_end.split(':'))
+                        r_h, r_m = map(int, hora_solicitada.split(':'))
+                        slot_start_min = s_h * 60 + s_m
+                        slot_end_min = e_h * 60 + e_m
+                        requested_min = r_h * 60 + r_m
+                        # La hora de inicio debe caer dentro de algún slot libre
+                        if requested_min >= slot_start_min and requested_min < slot_end_min:
+                            slot_disponible = True
+                            logger.info(f"crear_cita: MATCH hora={hora_solicitada} en slot {slot_start}-{slot_end}")
+                            break
+
+                if not slot_disponible:
+                    logger.warning(
+                        f"crear_cita: hora {hora_solicitada} NO disponible. "
+                        f"Slots disponibles: {[s['start']+'-'+s['end'] for s in slots_disponibles]}"
+                    )
+                    # Formatear slots disponibles para mostrar al usuario
+                    slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
+                    if slots_disponibles:
+                        return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
+                    else:
+                        return f"❌ Lo siento, no hay horarios disponibles para el {fecha.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
+
             fin = fecha + timedelta(minutes=duration)
             nombre = self.customer.full_name or "Cliente"
             titulo = f"{titulo_prefix}{servicio} - {nombre}"
@@ -836,7 +869,41 @@ class ToolExecutor:
             if evento:
                 # Guardar en BD
                 from app.models.tables import Appointment
+                from sqlalchemy import select, and_
                 async with AsyncSessionLocal() as session:
+                    # Dedup: verificar que no exista una cita igual (mismo cliente, mismo horario ±5 min)
+                    dedup_window = timedelta(minutes=5)
+                    existing = await session.execute(
+                        select(Appointment).where(
+                            and_(
+                                Appointment.customer_id == self.customer.id,
+                                Appointment.client_id == self.client.id,
+                                Appointment.status == "CONFIRMED",
+                                Appointment.start_time >= fecha - dedup_window,
+                                Appointment.start_time <= fecha + dedup_window,
+                            )
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        logger.warning(f"Cita duplicada detectada para customer={self.customer.id} en {fecha}")
+                        # Borrar el evento duplicado de Google Calendar
+                        try:
+                            await calendar_service.cancel_appointment(
+                                calendar_id=calendar_id,
+                                event_id=evento.get('id')
+                            )
+                        except Exception:
+                            pass
+                        return "Ya tienes una cita confirmada en ese horario. ¿Deseas ver tus citas o agendar en otro horario?"
+
+                    # Extraer precio numérico de precio_servicio (e.g. "$1,500" → 1500.00)
+                    precio_numerico = None
+                    if precio_servicio:
+                        try:
+                            precio_numerico = float(_re.sub(r'[^\d.]', '', precio_servicio))
+                        except (ValueError, TypeError):
+                            pass
+
                     appointment = Appointment(
                         client_id=self.client.id,
                         customer_id=self.customer.id,
@@ -844,7 +911,8 @@ class ToolExecutor:
                         start_time=fecha,
                         end_time=fin,
                         status="CONFIRMED",
-                        notes=f"{servicio}{descripcion_extra}"
+                        notes=f"{servicio}{descripcion_extra}",
+                        total_price=precio_numerico
                     )
                     session.add(appointment)
                     await session.commit()
@@ -939,10 +1007,13 @@ class ToolExecutor:
             else:
                 texto = "📋 *Tus citas programadas:*\n\n"
             
+            currency = self.config.get("currency", "$")
             for cita in citas:
                 fecha_local = cita.start_time.astimezone(tz)
                 texto += f"• {cita.notes or 'Cita'}\n"
                 texto += f"  📅 {fecha_local.strftime('%d/%m/%Y')} a las {_format_time_ampm(fecha_local.strftime('%H:%M'))}\n"
+                if cita.total_price is not None:
+                    texto += f"  💰 {currency}{cita.total_price:,.2f}\n"
                 if cita.google_event_id:
                     texto += f"  ID: `{cita.google_event_id}`\n\n"
                 else:
@@ -1167,16 +1238,18 @@ class ToolExecutor:
     # MODIFICAR/REAGENDAR CITA
     # ==========================================
     async def _modificar_cita(self, args: dict) -> str:
-        """Modifica una cita existente a nueva fecha/hora."""
+        """Modifica una cita existente a nueva fecha/hora y/o servicio/producto."""
         try:
             from app.services.calendar import calendar_service
             from app.models.tables import Appointment
             from sqlalchemy import select, and_
-            
+            import re as _re
+
             fecha_antigua_str = args.get("fecha_antigua")
             hora_antigua_str = args.get("hora_antigua")
             fecha_nueva_str = args.get("fecha_nueva")
             hora_nueva_str = args.get("hora_nueva")
+            nuevo_servicio = args.get("servicio")
             profesional_id = args.get("profesional_id")
             email = args.get("email")
             
@@ -1251,9 +1324,48 @@ class ToolExecutor:
                 
                 if not appointment:
                     return "No encontré la cita que quieres modificar. ¿Puedes darme más detalles?"
-                
+
+                # Si el servicio/producto cambia, recalcular precio, notes y duración
+                nuevo_precio = None
+                nuevas_notes = None
+                currency = self.config.get("currency", "$")
+
+                if nuevo_servicio:
+                    descripcion_extra = ""
+                    precio_servicio = None
+
+                    # Buscar en servicios configurados (salon, clinic)
+                    if self.config.get("services"):
+                        srv = next((s for s in self.config["services"] if nuevo_servicio.lower() in s["name"].lower()), None)
+                        if srv:
+                            nuevo_servicio = srv["name"]
+                            precio_servicio = f"{currency}{srv['price']:,}"
+                            descripcion_extra += f"\nPrecio: {precio_servicio}"
+
+                    # Mantener info del profesional en notes
+                    profesional_nombre = None
+                    for prof in self.config.get("professionals", []):
+                        if prof.get("name") in (appointment.notes or ""):
+                            profesional_nombre = prof["name"]
+                            descripcion_extra += f"\nProfesional: {profesional_nombre}"
+                            break
+
+                    nuevas_notes = f"{nuevo_servicio}{descripcion_extra}"
+
+                    # Extraer precio numérico
+                    if precio_servicio:
+                        try:
+                            nuevo_precio = float(_re.sub(r'[^\d.]', '', precio_servicio))
+                        except (ValueError, TypeError):
+                            pass
+
                 # Calcular nueva duración
                 duration = (appointment.end_time - appointment.start_time).total_seconds() / 60
+                # Si cambia servicio y tiene duración definida, usar esa
+                if nuevo_servicio and self.config.get("services"):
+                    srv = next((s for s in self.config["services"] if nuevo_servicio.lower() in s["name"].lower()), None)
+                    if srv and srv.get("duration"):
+                        duration = srv["duration"]
                 fecha_nueva_fin = fecha_nueva + timedelta(minutes=duration)
                 
                 # Determinar calendario
@@ -1268,60 +1380,60 @@ class ToolExecutor:
                 # VERIFICAR DISPONIBILIDAD DEL NUEVO SLOT
                 # ==========================================
                 from app.services.calendar import calendar_service
-                
-                # Obtener working_hours del profesional si aplica; tienda usa delivery_hours
-                working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
-                if self.business_type == "store":
-                    working_hours = self.config.get("delivery_hours", working_hours)
-                elif self.config.get("professionals") and appointment.notes:
-                    for prof in self.config["professionals"]:
-                        if prof.get("name") in appointment.notes:
-                            working_hours = prof.get("business_hours", working_hours)
-                            break
-                
-                config_for_calendar = {
-                    **self.config,
-                    "business_hours": working_hours,
-                    "slot_duration": int(duration)
-                }
-                
-                # Obtener slots disponibles para la nueva fecha
-                fecha_nueva_date = fecha_nueva.date()
-                slots_disponibles = await calendar_service.get_available_slots(
-                    calendar_id=calendar_id,
-                    date=fecha_nueva_date,
-                    duration_minutes=int(duration),
-                    config=config_for_calendar
-                )
-                
-                # Verificar si el nuevo horario está disponible
-                hora_solicitada = fecha_nueva.strftime('%H:%M')
-                slot_disponible = False
-                
-                for slot in slots_disponibles:
-                    slot_start = slot.get('start', '')
-                    slot_end = slot.get('end', '')
-                    # Verificar si la hora solicitada cae dentro de algún slot libre
-                    # Google Calendar se encarga de validar conflictos reales
-                    if slot_start and slot_end:
-                        s_h, s_m = map(int, slot_start.split(':'))
-                        e_h, e_m = map(int, slot_end.split(':'))
-                        r_h, r_m = map(int, hora_solicitada.split(':'))
-                        slot_start_min = s_h * 60 + s_m
-                        slot_end_min = e_h * 60 + e_m
-                        requested_min = r_h * 60 + r_m
-                        if requested_min >= slot_start_min and requested_min < slot_end_min:
-                            slot_disponible = True
-                            break
-                
-                if not slot_disponible:
-                    # Formatear slots disponibles para mostrar al usuario
-                    slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
-                    if slots_disponibles:
-                        return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha_nueva.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
-                    else:
-                        return f"❌ Lo siento, no hay horarios disponibles para el {fecha_nueva.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
-                
+
+                allow_overlapping = self.config.get("allow_overlapping_appointments", False)
+
+                if not allow_overlapping:
+                    # Obtener working_hours del profesional si aplica; tienda usa delivery_hours
+                    working_hours = self.config.get("business_hours", {"start": "08:00", "end": "18:00"})
+                    if self.business_type == "store":
+                        working_hours = self.config.get("delivery_hours", working_hours)
+                    elif self.config.get("professionals") and appointment.notes:
+                        for prof in self.config["professionals"]:
+                            if prof.get("name") in appointment.notes:
+                                working_hours = prof.get("business_hours", working_hours)
+                                break
+
+                    config_for_calendar = {
+                        **self.config,
+                        "business_hours": working_hours,
+                        "slot_duration": int(duration)
+                    }
+
+                    # Obtener slots disponibles para la nueva fecha
+                    fecha_nueva_date = fecha_nueva.date()
+                    slots_disponibles = await calendar_service.get_available_slots(
+                        calendar_id=calendar_id,
+                        date=fecha_nueva_date,
+                        duration_minutes=int(duration),
+                        config=config_for_calendar
+                    )
+
+                    # Verificar si el nuevo horario está disponible
+                    hora_solicitada = fecha_nueva.strftime('%H:%M')
+                    slot_disponible = False
+
+                    for slot in slots_disponibles:
+                        slot_start = slot.get('start', '')
+                        slot_end = slot.get('end', '')
+                        if slot_start and slot_end:
+                            s_h, s_m = map(int, slot_start.split(':'))
+                            e_h, e_m = map(int, slot_end.split(':'))
+                            r_h, r_m = map(int, hora_solicitada.split(':'))
+                            slot_start_min = s_h * 60 + s_m
+                            slot_end_min = e_h * 60 + e_m
+                            requested_min = r_h * 60 + r_m
+                            if requested_min >= slot_start_min and requested_min < slot_end_min:
+                                slot_disponible = True
+                                break
+
+                    if not slot_disponible:
+                        slots_text = "\n".join([f"• {_format_time_ampm(s['start'])} - {_format_time_ampm(s['end'])}" for s in slots_disponibles[:10]])
+                        if slots_disponibles:
+                            return f"❌ Lo siento, el horario {_format_time_ampm(hora_solicitada)} no está disponible para el {fecha_nueva.strftime('%d de %B de %Y')}.\n\n📅 Horarios disponibles:\n{slots_text}\n\n¿Cuál prefieres?"
+                        else:
+                            return f"❌ Lo siento, no hay horarios disponibles para el {fecha_nueva.strftime('%d de %B de %Y')}. ¿Te funciona otra fecha?"
+
                 # Quitar la cita anterior del calendario y crear la nueva (evita duplicados)
                 from googleapiclient.errors import HttpError
                 try:
@@ -1334,27 +1446,33 @@ class ToolExecutor:
                     if not deleted:
                         logger.warning(f"No se pudo borrar evento antiguo {old_event_id}, puede quedar duplicado")
                     
-                    # 2) Crear nuevo evento en la nueva fecha/hora
+                    # 2) Usar notes actualizadas si cambió el servicio
+                    effective_notes = nuevas_notes if nuevas_notes else appointment.notes
+
                     title = f"Cita: {self.customer.full_name or 'Cliente'}"
-                    if appointment.notes:
-                        notes_parts = appointment.notes.split('\n')
+                    if effective_notes:
+                        notes_parts = effective_notes.split('\n')
                         title = notes_parts[0] if notes_parts else title
                     new_event = await calendar_service.create_appointment(
                         calendar_id=calendar_id,
                         title=title,
                         start_time=fecha_nueva,
                         end_time=fecha_nueva_fin,
-                        description=appointment.notes or "",
+                        description=effective_notes or "",
                         attendee_phone=self.customer.phone_number or "",
                         config=self.config,
                     )
                     if not new_event or not new_event.get("id"):
                         return "No pude crear la nueva cita en el calendario. Intenta de nuevo."
-                    
-                    # 3) Actualizar en BD con el nuevo event_id y fechas
+
+                    # 3) Actualizar en BD con el nuevo event_id, fechas, y servicio/precio si cambiaron
                     appointment.google_event_id = new_event["id"]
                     appointment.start_time = fecha_nueva
                     appointment.end_time = fecha_nueva_fin
+                    if nuevas_notes:
+                        appointment.notes = nuevas_notes
+                    if nuevo_precio is not None:
+                        appointment.total_price = nuevo_precio
                     await session.commit()
                     
                     # Guardar email si se proporciona
@@ -1365,18 +1483,18 @@ class ToolExecutor:
                     # Extraer profesional para el mensaje de confirmación
                     profesional_nombre = None
                     for prof in self.config.get("professionals", []):
-                        if prof.get("name") in (appointment.notes or ""):
+                        if prof.get("name") in (effective_notes or ""):
                             profesional_nombre = prof.get("name")
                             break
-                    
+
                     # Enviar email de confirmación
                     customer_email = email or (self.customer.data.get("email") if self.customer.data else None)
                     email_enviado = False
                     if customer_email:
                         try:
                             from app.services.email_service import email_service
-                            
-                            notes_parts = appointment.notes.split('\n') if appointment.notes else []
+
+                            notes_parts = effective_notes.split('\n') if effective_notes else []
                             servicio = notes_parts[0] if notes_parts else "Cita"
                             appointment_details = {
                                 "servicio": servicio,

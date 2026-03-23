@@ -224,6 +224,7 @@ async def get_pending_appointments(
                     "end_time": apt.end_time.isoformat(),
                     "status": apt.status,
                     "notes": apt.notes,
+                    "total_price": float(apt.total_price) if apt.total_price is not None else None,
                     "customer": {
                         "name": customer.full_name,
                         "phone": customer.phone_number
