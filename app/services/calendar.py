@@ -138,7 +138,8 @@ class CalendarService:
         end_time: datetime,
         description: str = "",
         attendee_phone: str = "",
-        config: dict | None = None
+        config: dict | None = None,
+        location: str = ""
     ) -> dict | None:
         """
         Crea una cita en Google Calendar.
@@ -178,6 +179,9 @@ class CalendarService:
                     ],
                 },
             }
+
+            if location:
+                event['location'] = location
             
             created_event = await asyncio.to_thread(
                 self.service.events().insert(

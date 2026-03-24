@@ -123,5 +123,8 @@ class Appointment(Base):
     # Precio total del servicio/producto
     total_price = Column(Numeric(12, 2), nullable=True)
 
+    # Nombre para la factura / a nombre de quién va la cita o reserva
+    invoice_name = Column(String, nullable=True)
+
     client = relationship("Client", back_populates="appointments")
     customer = relationship("Customer", back_populates="appointments")

@@ -365,6 +365,7 @@ class EmailService:
             rows += _detail_row("👨‍⚕️", "Profesional", details.get('profesional'))
             rows += _detail_row("👥", "Personas", details.get('num_personas'))
             rows += _detail_row("🪑", "Área", details.get('area'))
+            rows += _detail_row("📋", "A nombre de", details.get('nombre_factura'))
             
             notice = '''<div style="background:#fff8e1; border-left:4px solid #ffc107; padding:12px 16px; border-radius:0 6px 6px 0; margin-bottom:16px;">
                 <strong style="color:#856404;">⚠️ Tu cita ha sido modificada</strong>
@@ -387,7 +388,8 @@ class EmailService:
             rows += _detail_row("👥", "Personas", details.get('num_personas'))
             rows += _detail_row("🪑", "Área", details.get('area'))
             rows += _detail_row("🎉", "Ocasión", details.get('ocasion'))
-            
+            rows += _detail_row("📋", "Reserva a nombre de", details.get('nombre_factura'))
+
             extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Gracias por tu reservación! Aquí están los detalles:</p>'
             extra += '''<div style="margin-top:16px; padding:12px; background:#f0fdf4; border-radius:6px; text-align:center;">
                 <p style="margin:0; color:#166534; font-size:14px;">📍 Por favor llega <strong>10 minutos antes</strong> de tu reservación</p>
@@ -404,7 +406,8 @@ class EmailService:
             rows += _detail_row("👨‍⚕️", "Profesional", details.get('profesional'))
             rows += _detail_row("📋", "Tipo de consulta", details.get('servicio'))
             rows += _detail_row("💰", "Precio", details.get('precio'))
-            
+            rows += _detail_row("📋", "Cita a nombre de", details.get('nombre_factura'))
+
             extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Su cita médica ha sido confirmada:</p>'
             extra += '''<div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:6px;">
                 <p style="margin:0 0 4px 0; color:#1e40af; font-size:14px; font-weight:600;">📋 Recomendaciones:</p>
@@ -425,7 +428,8 @@ class EmailService:
             rows += _detail_row("�", "Servicio", details.get('servicio'))
             rows += _detail_row("👤", "Profesional", details.get('profesional'))
             rows += _detail_row("💰", "Precio", details.get('precio'))
-            
+            rows += _detail_row("📋", "Cita a nombre de", details.get('nombre_factura'))
+
             extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">¡Tu cita ha sido confirmada! Aquí están los detalles:</p>'
             extra += '''<div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:6px; text-align:center;">
                 <p style="margin:0; color:#1e40af; font-size:14px;">Llega <strong>5-10 minutos antes</strong> de tu cita</p>
@@ -442,6 +446,7 @@ class EmailService:
             rows += _detail_row("💰", "Precio", details.get('precio'))
             rows += _detail_row("📍", "Dirección de entrega", details.get('direccion'))
             rows += _detail_row("📋", "Detalles", details.get('detalles'))
+            rows += _detail_row("🧾", "Factura a nombre de", details.get('nombre_factura'))
             
             extra = '<p style="margin:0 0 8px 0; color:#333; font-size:15px; line-height:1.6;">Su entrega ha sido programada:</p>'
             extra += '''<div style="margin-top:16px; padding:12px; background:#f0fdf4; border-radius:6px; text-align:center;">

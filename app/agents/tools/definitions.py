@@ -145,6 +145,10 @@ TOOL_DEFINITIONS = [
                             type=types.Type.STRING,
                             description="Detalles que definen precio o servicio: tipo de vehículo (sedan, SUV, camioneta), tamaño, variante del servicio, etc. Todo lo que el negocio use para diferenciar precios o anotar en la cita."
                         ),
+                        "nombre_factura": types.Schema(
+                            type=types.Type.STRING,
+                            description="Nombre para la factura/cita/reserva. Para tiendas: a nombre de quién va la factura. Para citas/salones/clínicas: a nombre de quién va la cita. Para restaurantes: a nombre de quién va la reserva. Preguntar al cliente antes de confirmar."
+                        ),
                         "forzar_horario": types.Schema(
                             type=types.Type.BOOLEAN,
                             description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados (ej: profesional que trabaja domingos según instrucciones especiales)"
@@ -252,6 +256,10 @@ TOOL_DEFINITIONS = [
                         "email": types.Schema(
                             type=types.Type.STRING,
                             description="Correo electrónico para enviar confirmación de modificación"
+                        ),
+                        "nombre_factura": types.Schema(
+                            type=types.Type.STRING,
+                            description="Nuevo nombre para la factura/cita/reserva, si el cliente quiere cambiarlo"
                         ),
                         "forzar_horario": types.Schema(
                             type=types.Type.BOOLEAN,
@@ -650,7 +658,8 @@ class ToolExecutor:
             area = args.get("area")
             ocasion = args.get("ocasion")
             detalles = args.get("detalles")
-            
+            nombre_factura = args.get("nombre_factura")
+
             # Sanitizar inputs: remover HTML tags
             import re as _re
             def _sanitize(val):
@@ -662,6 +671,7 @@ class ToolExecutor:
             direccion = _sanitize(direccion)
             detalles = _sanitize(detalles)
             ocasion = _sanitize(ocasion)
+            nombre_factura = _sanitize(nombre_factura)
             
             # Validar email si se proporcionó
             if email:
@@ -788,7 +798,14 @@ class ToolExecutor:
                 descripcion_extra += f"\n🎉 Ocasión: {ocasion}"
             if detalles:
                 descripcion_extra += f"\n📋 Detalles: {detalles}"
-            
+            if nombre_factura:
+                if self.business_type == "store":
+                    descripcion_extra += f"\n🧾 Factura a nombre de: {nombre_factura}"
+                elif self.business_type == "restaurant":
+                    descripcion_extra += f"\n📋 Reserva a nombre de: {nombre_factura}"
+                else:
+                    descripcion_extra += f"\n📋 Cita a nombre de: {nombre_factura}"
+
             # Validar horario (a menos que forzar_horario=true)
             forzar = args.get("forzar_horario", False)
             if not forzar:
@@ -902,7 +919,8 @@ class ToolExecutor:
                 end_time=fin,
                 description=f"Agendado via WhatsApp\nServicio: {servicio}{descripcion_extra}{precio_str}\nTeléfono: {self.customer.phone_number}" + (f"\nEmail: {email}" if email else ""),
                 attendee_phone=self.customer.phone_number,
-                config=self.config
+                config=self.config,
+                location=direccion or ""
             )
             
             if evento:
@@ -951,7 +969,8 @@ class ToolExecutor:
                         end_time=fin,
                         status="CONFIRMED",
                         notes=f"{servicio}{descripcion_extra}",
-                        total_price=precio_numerico
+                        total_price=precio_numerico,
+                        invoice_name=nombre_factura
                     )
                     session.add(appointment)
                     await session.commit()
@@ -972,7 +991,8 @@ class ToolExecutor:
                             "direccion": direccion,
                             "num_personas": num_personas,
                             "area": area,
-                            "ocasion": ocasion
+                            "ocasion": ocasion,
+                            "nombre_factura": nombre_factura
                         }
                         
                         email_enviado = await email_service.send_confirmation_email(
@@ -994,18 +1014,22 @@ class ToolExecutor:
                 
                 hora_display = _format_time_ampm(hora_str)
                 if self.business_type == "store":
-                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📦 {servicio}\n📍 {direccion or 'Pendiente'}{email_msg}\n\n¡Te esperamos!"
+                    factura_msg = f"\n🧾 Factura: {nombre_factura}" if nombre_factura else ""
+                    return f"✅ *Entrega agendada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📦 {servicio}\n📍 {direccion or 'Pendiente'}{factura_msg}{email_msg}\n\n¡Te esperamos!"
                 elif self.business_type == "restaurant":
                     area_msg = f"\n🪑 Área: {area}" if area else ""
                     ocasion_msg = f"\n🎉 Ocasión: {ocasion}" if ocasion else ""
-                    return f"🍽️ *¡Reservación confirmada!*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n👥 {num_personas or 2} personas{area_msg}{ocasion_msg}{email_msg}\n\n¡Será un placer atenderles! 🥂"
+                    reserva_msg = f"\n📋 A nombre de: {nombre_factura}" if nombre_factura else ""
+                    return f"🍽️ *¡Reservación confirmada!*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n👥 {num_personas or 2} personas{area_msg}{ocasion_msg}{reserva_msg}{email_msg}\n\n¡Será un placer atenderles! 🥂"
                 elif self.business_type == "clinic":
                     prof_msg = f"\n👨‍⚕️ {profesional_nombre}" if profesional_nombre else ""
-                    return f"🏥 *Cita médica confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{prof_msg}{email_msg}\n\n¡Le esperamos!"
+                    cita_msg = f"\n📋 A nombre de: {nombre_factura}" if nombre_factura else ""
+                    return f"🏥 *Cita médica confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{prof_msg}{cita_msg}{email_msg}\n\n¡Le esperamos!"
                 else:
                     det_msg = f"\n📋 {detalles}" if detalles else ""
                     prof_msg = f"\n👤 {profesional_nombre}" if profesional_nombre else ""
-                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{det_msg}{prof_msg}{email_msg}\n\n¡Te esperamos! 💖"
+                    cita_msg = f"\n📋 A nombre de: {nombre_factura}" if nombre_factura else ""
+                    return f"✅ *Cita confirmada*\n\n📅 {fecha.strftime('%d de %B de %Y')}\n🕐 {hora_display}\n📋 {servicio}{det_msg}{prof_msg}{cita_msg}{email_msg}\n\n¡Te esperamos! 💖"
             
             return "No pude crear la cita. Intenta de nuevo."
             
@@ -1291,7 +1315,8 @@ class ToolExecutor:
             nuevo_servicio = args.get("servicio")
             profesional_id = args.get("profesional_id")
             email = args.get("email")
-            
+            nombre_factura = args.get("nombre_factura")
+
             tz = pytz.timezone(self.config.get('timezone', 'America/Santo_Domingo'))
             
             # Parsear fechas
@@ -1492,6 +1517,13 @@ class ToolExecutor:
                     if effective_notes:
                         notes_parts = effective_notes.split('\n')
                         title = notes_parts[0] if notes_parts else title
+                    # Extraer dirección de las notas para el campo location de Calendar
+                    reschedule_location = ""
+                    if effective_notes:
+                        loc_match = _re.search(r'Dirección:\s*(.+)', effective_notes)
+                        if loc_match:
+                            reschedule_location = loc_match.group(1).strip()
+
                     new_event = await calendar_service.create_appointment(
                         calendar_id=calendar_id,
                         title=title,
@@ -1500,6 +1532,7 @@ class ToolExecutor:
                         description=effective_notes or "",
                         attendee_phone=self.customer.phone_number or "",
                         config=self.config,
+                        location=reschedule_location,
                     )
                     if not new_event or not new_event.get("id"):
                         return "No pude crear la nueva cita en el calendario. Intenta de nuevo."
@@ -1512,6 +1545,8 @@ class ToolExecutor:
                         appointment.notes = nuevas_notes
                     if nuevo_precio is not None:
                         appointment.total_price = nuevo_precio
+                    if nombre_factura:
+                        appointment.invoice_name = nombre_factura
                     await session.commit()
                     
                     # Guardar email si se proporciona
@@ -1538,7 +1573,8 @@ class ToolExecutor:
                             appointment_details = {
                                 "servicio": servicio,
                                 "profesional": profesional_nombre,
-                                "modificada": True
+                                "modificada": True,
+                                "nombre_factura": nombre_factura or appointment.invoice_name
                             }
                             
                             email_enviado = await email_service.send_confirmation_email(

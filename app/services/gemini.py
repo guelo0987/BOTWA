@@ -187,7 +187,13 @@ Profesionales disponibles:
 
         innate_rules = []
         if has_calendar:
-            innate_rules.append("Para agendar: recopila nombre, correo (o teléfono si no tiene), fecha y hora. Confirma antes de crear la cita.")
+            if business_type == "store":
+                factura_label = "¿A nombre de quién va la factura?"
+            elif business_type == "restaurant":
+                factura_label = "¿A nombre de quién va la reserva?"
+            else:
+                factura_label = "¿A nombre de quién va la cita?"
+            innate_rules.append(f"Para agendar: recopila nombre, correo (o teléfono si no tiene), fecha, hora y pregunta \"{factura_label}\" (pasar en 'nombre_factura'). Confirma antes de crear la cita.")
             if has_services_or_catalog_pdf:
                 innate_rules.append(
                     "Si el negocio tiene servicios o catálogo (PDF/manual): pregunta qué servicio desea. "

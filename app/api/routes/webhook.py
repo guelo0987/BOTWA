@@ -223,7 +223,17 @@ def process_incoming_message(message, value) -> ProcessedMessage | None:
         elif message_type == "location" and message.location:
             lat = message.location.latitude
             lon = message.location.longitude
-            content = f"[Ubicación: {lat}, {lon}]"
+            maps_link = f"https://maps.google.com/?q={lat},{lon}"
+            loc_name = message.location.name or ""
+            loc_address = message.location.address or ""
+            parts = []
+            if loc_name:
+                parts.append(f"Nombre: {loc_name}")
+            if loc_address:
+                parts.append(f"Dirección: {loc_address}")
+            parts.append(f"Coordenadas: {lat}, {lon}")
+            parts.append(f"Google Maps: {maps_link}")
+            content = f"[Ubicación del cliente]\n" + "\n".join(parts)
         
         elif message_type in ("sticker", "reaction", "contacts", "ephemeral", "unsupported"):
             # Tipos que no requieren procesamiento por IA
