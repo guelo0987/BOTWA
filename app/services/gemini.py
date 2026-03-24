@@ -645,33 +645,59 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 tool_executor
             )
             
-            # Si Gemini devolvió respuesta vacía, reintentar SIN tools para evitar
-            # que ejecute herramientas duplicadas (ej: crear_cita de nuevo)
+            # Si Gemini devolvió respuesta vacía, reintentar
+            # Primero reintenta CON tools (Gemini pudo haber intentado un function call que falló)
+            # Si sigue vacío, reintentar SIN tools para obtener al menos una respuesta de texto
             empty_msg = "Lo siento, no pude procesar tu solicitud"
-            retries = 0
-            while final_response.startswith(empty_msg) and retries < 1:
-                retries += 1
-                logger.info(f"Reintentando Gemini (intento {retries}/1) por respuesta vacía (SIN tools)...")
-                retry_response = await asyncio.wait_for(
-                    self.client.aio.models.generate_content(
-                        model=self.model,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_prompt + "\n\n⚠️ IMPORTANTE: Responde SOLO con texto. NO uses herramientas. Resume lo que ha pasado en la conversación de forma útil para el usuario.",
-                            temperature=0.5 + (retries * 0.1),  # Subir temp ligeramente en retry
-                            top_p=0.95,
-                            max_output_tokens=1024,
-                            # NO incluir tools en retry para evitar duplicados
-                        )
-                    ),
-                    timeout=30.0
-                )
-                # Procesar SIN tool_executor ya que no hay tools
-                if retry_response.candidates and retry_response.candidates[0].content:
-                    for part in retry_response.candidates[0].content.parts or []:
-                        if hasattr(part, 'text') and part.text and part.text.strip():
-                            final_response = part.text.strip()
-                            break
+            if final_response.startswith(empty_msg):
+                logger.info("Reintentando Gemini (intento 1/2) por respuesta vacía (CON tools)...")
+                try:
+                    retry_response = await asyncio.wait_for(
+                        self.client.aio.models.generate_content(
+                            model=self.model,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_prompt,
+                                temperature=0.6,
+                                top_p=0.95,
+                                max_output_tokens=1024,
+                                tools=TOOL_DEFINITIONS,
+                            )
+                        ),
+                        timeout=30.0
+                    )
+                    retry_result = await self._process_response(
+                        retry_response, contents, tool_executor
+                    )
+                    if not retry_result.startswith(empty_msg):
+                        final_response = retry_result
+                except Exception as e:
+                    logger.warning(f"Retry con tools falló: {e}")
+
+            # Si aún está vacío, reintentar SIN tools
+            if final_response.startswith(empty_msg):
+                logger.info("Reintentando Gemini (intento 2/2) por respuesta vacía (SIN tools)...")
+                try:
+                    retry_response = await asyncio.wait_for(
+                        self.client.aio.models.generate_content(
+                            model=self.model,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                system_instruction=system_prompt + "\n\n⚠️ IMPORTANTE: Responde SOLO con texto. NO uses herramientas. Resume lo que ha pasado en la conversación de forma útil para el usuario.",
+                                temperature=0.7,
+                                top_p=0.95,
+                                max_output_tokens=1024,
+                            )
+                        ),
+                        timeout=30.0
+                    )
+                    if retry_response.candidates and retry_response.candidates[0].content:
+                        for part in retry_response.candidates[0].content.parts or []:
+                            if hasattr(part, 'text') and part.text and part.text.strip():
+                                final_response = part.text.strip()
+                                break
+                except Exception as e:
+                    logger.warning(f"Retry sin tools falló: {e}")
             
             return self._clean_response(final_response)
             

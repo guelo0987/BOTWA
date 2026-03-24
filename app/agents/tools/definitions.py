@@ -1406,6 +1406,24 @@ class ToolExecutor:
                             precio_servicio = f"{currency}{srv['price']:,}"
                             descripcion_extra += f"\nPrecio: {precio_servicio}"
 
+                    # Buscar en catálogo (store)
+                    if not precio_servicio and self.config.get("catalog"):
+                        for cat in self.config["catalog"].get("categories", []):
+                            for prod in cat.get("products", []):
+                                if prod["name"].lower() in nuevo_servicio.lower() or nuevo_servicio.lower() in prod["name"].lower():
+                                    producto_precio = prod.get("price")
+                                    if producto_precio is not None:
+                                        delivery_fee = self.config.get("delivery_fee")
+                                        total = producto_precio + (delivery_fee or 0)
+                                        precio_servicio = f"{currency}{total:,.2f}"
+                                        descripcion_extra += f"\nPrecio producto: {currency}{producto_precio:,.2f}"
+                                        if delivery_fee:
+                                            descripcion_extra += f"\nCosto envío: {currency}{delivery_fee:,.2f}"
+                                        descripcion_extra += f"\nTotal: {precio_servicio}"
+                                    break
+                            if precio_servicio:
+                                break
+
                     # Mantener info del profesional en notes
                     profesional_nombre = None
                     for prof in self.config.get("professionals", []):
@@ -1413,6 +1431,21 @@ class ToolExecutor:
                             profesional_nombre = prof["name"]
                             descripcion_extra += f"\nProfesional: {profesional_nombre}"
                             break
+
+                    # Preservar dirección de la cita original
+                    if appointment.notes:
+                        dir_match = _re.search(r'📍?\s*Dirección:\s*(.+)', appointment.notes)
+                        if dir_match:
+                            descripcion_extra += f"\n📍 Dirección: {dir_match.group(1).strip()}"
+
+                    # Agregar nombre de factura
+                    if nombre_factura:
+                        if self.business_type == "store":
+                            descripcion_extra += f"\n🧾 Factura a nombre de: {nombre_factura}"
+                        elif self.business_type == "restaurant":
+                            descripcion_extra += f"\n📋 Reserva a nombre de: {nombre_factura}"
+                        else:
+                            descripcion_extra += f"\n📋 Cita a nombre de: {nombre_factura}"
 
                     nuevas_notes = f"{nuevo_servicio}{descripcion_extra}"
 
@@ -1422,6 +1455,20 @@ class ToolExecutor:
                             nuevo_precio = float(_re.sub(r'[^\d.]', '', precio_servicio))
                         except (ValueError, TypeError):
                             pass
+
+                # Even if product didn't change, add nombre_factura to existing notes if provided
+                if not nuevas_notes and nombre_factura:
+                    existing_notes = appointment.notes or ""
+                    factura_label = "Factura" if self.business_type == "store" else ("Reserva" if self.business_type == "restaurant" else "Cita")
+                    # Remove old factura line if present
+                    existing_notes = _re.sub(r'\n[🧾📋]?\s*(Factura|Reserva|Cita) a nombre de:.*', '', existing_notes)
+                    if self.business_type == "store":
+                        existing_notes += f"\n🧾 Factura a nombre de: {nombre_factura}"
+                    elif self.business_type == "restaurant":
+                        existing_notes += f"\n📋 Reserva a nombre de: {nombre_factura}"
+                    else:
+                        existing_notes += f"\n📋 Cita a nombre de: {nombre_factura}"
+                    nuevas_notes = existing_notes
 
                 # Calcular nueva duración
                 duration = (appointment.end_time - appointment.start_time).total_seconds() / 60
@@ -1524,12 +1571,19 @@ class ToolExecutor:
                         if loc_match:
                             reschedule_location = loc_match.group(1).strip()
 
+                    # Build rich description like _crear_cita
+                    customer_email = email or (self.customer.data.get("email") if self.customer.data else None)
+                    rich_description = f"Modificado via WhatsApp\nServicio: {effective_notes}"
+                    rich_description += f"\nTeléfono: {self.customer.phone_number}"
+                    if customer_email:
+                        rich_description += f"\nEmail: {customer_email}"
+
                     new_event = await calendar_service.create_appointment(
                         calendar_id=calendar_id,
                         title=title,
                         start_time=fecha_nueva,
                         end_time=fecha_nueva_fin,
-                        description=effective_notes or "",
+                        description=rich_description,
                         attendee_phone=self.customer.phone_number or "",
                         config=self.config,
                         location=reschedule_location,
@@ -1570,11 +1624,21 @@ class ToolExecutor:
 
                             notes_parts = effective_notes.split('\n') if effective_notes else []
                             servicio = notes_parts[0] if notes_parts else "Cita"
+                            # Extract price and address from notes for email
+                            precio_email = None
+                            direccion_email = None
+                            for part in notes_parts:
+                                if 'Total:' in part or ('Precio:' in part and not precio_email):
+                                    precio_email = part.split(':',1)[-1].strip()
+                                if 'Dirección:' in part:
+                                    direccion_email = part.split(':',1)[-1].strip()
                             appointment_details = {
                                 "servicio": servicio,
                                 "profesional": profesional_nombre,
                                 "modificada": True,
-                                "nombre_factura": nombre_factura or appointment.invoice_name
+                                "nombre_factura": nombre_factura or appointment.invoice_name,
+                                "precio": precio_email,
+                                "direccion": direccion_email,
                             }
                             
                             email_enviado = await email_service.send_confirmation_email(
@@ -1591,15 +1655,38 @@ class ToolExecutor:
                     
                     email_msg = "\n\n📧 Te enviamos confirmación a tu correo." if email_enviado else ""
                     
-                    # Mensaje de confirmación
+                    # Mensaje de confirmación — extraer detalles de las notes
                     hora_nueva_display = _format_time_ampm(hora_nueva_str)
-                    if self.business_type == "restaurant":
-                        return f"🍽️ *¡Reservación modificada!*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{email_msg}\n\n¡Será un placer atenderles! 🥂"
+                    mod_notes_parts = effective_notes.split('\n') if effective_notes else []
+                    mod_servicio = mod_notes_parts[0] if mod_notes_parts else ""
+                    mod_precio = None
+                    mod_direccion = None
+                    mod_factura = nombre_factura or appointment.invoice_name
+                    for part in mod_notes_parts:
+                        if 'Total:' in part:
+                            mod_precio = part.split(':',1)[-1].strip()
+                        elif 'Precio:' in part and not mod_precio:
+                            mod_precio = part.split(':',1)[-1].strip()
+                        if 'Dirección:' in part:
+                            mod_direccion = part.split(':',1)[-1].strip()
+
+                    if self.business_type == "store":
+                        servicio_msg = f"\n📦 {mod_servicio}" if mod_servicio else ""
+                        precio_msg = f"\n💰 {mod_precio}" if mod_precio else ""
+                        dir_msg = f"\n📍 {mod_direccion}" if mod_direccion else ""
+                        factura_msg = f"\n🧾 Factura: {mod_factura}" if mod_factura else ""
+                        return f"✅ *Entrega modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{servicio_msg}{precio_msg}{dir_msg}{factura_msg}{email_msg}\n\n¡Te esperamos!"
+                    elif self.business_type == "restaurant":
+                        reserva_msg = f"\n📋 A nombre de: {mod_factura}" if mod_factura else ""
+                        return f"🍽️ *¡Reservación modificada!*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{reserva_msg}{email_msg}\n\n¡Será un placer atenderles! 🥂"
                     elif self.business_type == "clinic":
                         prof_msg = f"\n👨‍⚕️ {profesional_nombre}" if profesional_nombre else ""
-                        return f"🏥 *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{prof_msg}{email_msg}\n\n¡Le esperamos!"
+                        cita_msg = f"\n📋 A nombre de: {mod_factura}" if mod_factura else ""
+                        return f"🏥 *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{prof_msg}{cita_msg}{email_msg}\n\n¡Le esperamos!"
                     else:
-                        return f"✅ *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{email_msg}\n\n¡Te esperamos!"
+                        servicio_msg = f"\n📋 {mod_servicio}" if mod_servicio else ""
+                        cita_msg = f"\n📋 A nombre de: {mod_factura}" if mod_factura else ""
+                        return f"✅ *Cita modificada*\n\n📅 {fecha_nueva.strftime('%d de %B de %Y')}\n🕐 {hora_nueva_display}{servicio_msg}{cita_msg}{email_msg}\n\n¡Te esperamos!"
                 
                 except HttpError as e:
                     logger.error(f"Error en calendario al modificar cita: {e}")
