@@ -13,6 +13,9 @@ FROM python:3.12-slim
 # Security: run as non-root
 RUN groupadd -r appuser && useradd -r -g appuser -s /sbin/nologin appuser
 
+# Create writable tmp dir for gunicorn worker heartbeats (non-root can't use /tmp)
+RUN mkdir -p /app/tmp && chown appuser:appuser /app/tmp
+
 WORKDIR /app
 
 # Copy only installed packages from builder
@@ -42,5 +45,6 @@ CMD python -m gunicorn app.main:app \
     --bind "0.0.0.0:$PORT" \
     --timeout 120 \
     --graceful-timeout 30 \
+    --worker-tmp-dir /dev/shm \
     --access-logfile -
 
