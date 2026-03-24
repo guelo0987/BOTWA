@@ -640,9 +640,10 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
             
             # Procesar respuesta (con retry si Gemini devuelve vacío)
             final_response = await self._process_response(
-                response, 
-                contents, 
-                tool_executor
+                response,
+                contents,
+                tool_executor,
+                system_prompt=system_prompt,
             )
             
             # Si Gemini devolvió respuesta vacía, reintentar
@@ -667,7 +668,8 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                         timeout=30.0
                     )
                     retry_result = await self._process_response(
-                        retry_response, contents, tool_executor
+                        retry_response, contents, tool_executor,
+                        system_prompt=system_prompt,
                     )
                     if not retry_result.startswith(empty_msg):
                         final_response = retry_result
@@ -710,7 +712,8 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
         response,
         contents: list,
         tool_executor,
-        depth: int = 0
+        depth: int = 0,
+        system_prompt: str | None = None,
     ) -> str:
         """
         Procesa la respuesta de Gemini, ejecutando tools si es necesario.
@@ -776,6 +779,7 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                         model=self.model,
                         contents=contents,
                         config=types.GenerateContentConfig(
+                            system_instruction=system_prompt or "",
                             temperature=0.5,
                             max_output_tokens=1024,
                             tools=TOOL_DEFINITIONS,
@@ -783,13 +787,14 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                     ),
                     timeout=30.0
                 )
-                
+
                 # Procesar recursivamente
                 return await self._process_response(
-                    new_response, 
-                    contents, 
+                    new_response,
+                    contents,
                     tool_executor,
-                    depth + 1
+                    depth + 1,
+                    system_prompt=system_prompt,
                 )
             
             # Si solo hay texto (sin function call), retornarlo
@@ -954,22 +959,67 @@ SI HAY CONFLICTO con cualquier regla anterior, ESTAS INSTRUCCIONES GANAN:
                 await self.build_system_prompt(client, customer)
             )
     
+    # Tool names that must NEVER appear in customer-facing messages
+    _TOOL_NAMES = {
+        "ver_servicios", "ver_profesionales", "buscar_disponibilidad",
+        "crear_cita", "ver_mis_citas", "confirmar_cita", "cancelar_cita",
+        "modificar_cita", "guardar_datos_usuario", "escalar_a_humano",
+    }
+
     def _clean_response(self, text: str) -> str:
-        """Limpia la respuesta para WhatsApp."""
+        """Limpia la respuesta para WhatsApp y filtra function call leaks."""
+        import re
+
         if not text:
             return ""
-        
+
+        # =====================================================
+        # SAFETY NET: Strip leaked function-call text
+        # =====================================================
+        # Remove lines that contain tool_name( ... ) — complete or truncated
+        lines = text.split('\n')
+        safe_lines = []
+        stripped_any = False
+        for line in lines:
+            # If a line contains a known tool name followed by '(' → skip it
+            if any(f"{t}(" in line for t in self._TOOL_NAMES):
+                stripped_any = True
+                continue
+            safe_lines.append(line)
+        text = '\n'.join(safe_lines)
+
+        # Catch any remaining inline function-call fragments
+        # e.g. "...procedo a crear_cita(fecha=" embedded inside a sentence
+        for t in self._TOOL_NAMES:
+            if re.search(rf'\b{t}\s*\(', text):
+                stripped_any = True
+            text = re.sub(rf'\b{t}\s*\([^)]*\)?', '', text)
+
+        if stripped_any:
+            logger.warning(f"SAFETY NET: Function call text stripped from response")
+
+        # Remove stray internal markers that should not reach the customer
+        text = re.sub(r'\[Análisis de la imagen[^\]]*\]', '', text)
+        text = re.sub(r'\[Imagen \d+ de \d+\]', '', text)
+        text = re.sub(r'\[Ubicación compartida[^\]]*\]', '', text)
+        text = re.sub(r'\[DOCUMENT:[^\]]*\]', '', text)
+
+        # =====================================================
+        # Standard WhatsApp formatting cleanup
+        # =====================================================
         text = text.replace("**", "*")
         text = text.replace("```", "")
-        
-        lines = text.split('\n')
+
         cleaned_lines = []
-        for line in lines:
+        for line in text.split('\n'):
             if line.startswith('#'):
                 line = '*' + line.lstrip('#').strip() + '*'
             cleaned_lines.append(line)
         text = '\n'.join(cleaned_lines)
-        
+
+        # Collapse excessive blank lines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
         return text.strip()
 
 
