@@ -356,19 +356,22 @@ async def debounced_handle_message(msg: ProcessedMessage):
         # Combinar todos los mensajes en uno solo
         messages = [json.loads(m) for m in pending_msgs]
 
-        # Detectar si hay una imagen en los mensajes agrupados
-        image_msg = next((m for m in messages if m["message_type"] == "image"), None)
+        # Detectar si hay imágenes en los mensajes agrupados
+        image_msgs = [m for m in messages if m["message_type"] == "image"]
+        extra_media_ids = None
 
-        if image_msg:
-            # Combinar: imagen + cualquier texto que la acompañe
+        if image_msgs:
+            # Combinar: imágenes + cualquier texto que las acompañe
             text_parts = [m["content"] for m in messages if m["message_type"] == "text" and m.get("content")]
-            caption = image_msg.get("content") or ""
+            caption = image_msgs[0].get("content") or ""
             if text_parts:
                 caption = (caption + "\n" + "\n".join(text_parts)).strip()
             combined_content = caption or "[Imagen recibida]"
             combined_type = "image"
-            combined_media_id = image_msg.get("media_id")
-            logger.info(f"Debounce: combinando imagen + {len(text_parts)} textos de {msg.phone_number}: {combined_content[:100]}...")
+            combined_media_id = image_msgs[0].get("media_id")
+            # Guardar media_ids adicionales si hay más de una imagen
+            extra_media_ids = [m.get("media_id") for m in image_msgs[1:] if m.get("media_id")]
+            logger.info(f"Debounce: combinando {len(image_msgs)} imagen(es) + {len(text_parts)} textos de {msg.phone_number}: {combined_content[:100]}...")
         elif len(messages) == 1:
             # Solo un mensaje, procesar normal
             combined_content = messages[0]["content"]
@@ -390,7 +393,8 @@ async def debounced_handle_message(msg: ProcessedMessage):
             contact_name=msg.contact_name,
             message_type=combined_type,
             content=combined_content,
-            media_id=combined_media_id
+            media_id=combined_media_id,
+            extra_media_ids=extra_media_ids or None
         )
         
         # Marcar como leído todos los mensajes individuales
@@ -570,54 +574,89 @@ async def handle_message(msg: ProcessedMessage):
                 msg.media_id, filename, access_token=wa_token, api_version=wa_version
             )
         
-        # Analizar imagen si es necesario
+        # Analizar imagen(es) si es necesario
         elif msg.message_type == "image" and msg.media_id:
-            logger.debug("Analizando imagen...")
             # Construir contexto del negocio para el análisis
             business_context = dict(client.tools_config) if client.tools_config else {}
             business_context['business_name'] = client.business_name
             business_context['business_type'] = business_context.get('business_type', 'general')
-            
-            # Analizar la imagen con contexto del negocio
-            image_analysis = await media_service.analyze_image(
-                msg.media_id, 
-                msg.content,  # caption original
-                business_context,
-                access_token=wa_token,
-                api_version=wa_version,
-            )
-            
-            # Construir mensaje con contexto claro para el chat principal
+
+            # Recopilar todos los media_ids (imagen principal + extras del debounce)
+            all_media_ids = [msg.media_id]
+            if msg.extra_media_ids:
+                all_media_ids.extend(msg.extra_media_ids)
+
+            logger.info(f"Analizando {len(all_media_ids)} imagen(es) para {msg.phone_number}")
+
+            # Analizar todas las imágenes en paralelo
+            import asyncio as _aio
+            analysis_tasks = [
+                media_service.analyze_image(
+                    mid,
+                    msg.content if i == 0 else "",  # caption solo en la primera
+                    business_context,
+                    access_token=wa_token,
+                    api_version=wa_version,
+                )
+                for i, mid in enumerate(all_media_ids)
+            ]
+            analyses = await _aio.gather(*analysis_tasks)
+
             original_caption = msg.content if msg.content and msg.content != "[Imagen recibida]" else ""
 
-            # Detectar si el análisis identificó un producto del catálogo
-            producto_identificado = "PRODUCTO IDENTIFICADO" in image_analysis.upper()
+            if len(analyses) == 1:
+                # Una sola imagen — flujo original
+                image_analysis = analyses[0]
+                producto_identificado = "PRODUCTO IDENTIFICADO" in image_analysis.upper()
 
-            if producto_identificado:
-                # El producto FUE identificado — tratar como consulta válida del catálogo
-                user_message = (
-                    f"[El cliente envió una foto de un producto de nuestro catálogo"
-                    f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
-                    f"[Análisis de la imagen: {image_analysis}]\n\n"
-                    f"IMPORTANTE: La imagen SÍ es de nuestro catálogo. El producto fue identificado con los precios exactos del análisis. "
-                    f"NO envíes saludo de bienvenida ni link del catálogo — el cliente YA tiene el catálogo y está preguntando por un producto específico. "
-                    f"Usa los precios y el nombre del producto EXACTAMENTE como aparecen en el análisis de la imagen (no uses otros precios). "
-                    f"Responde directamente con la info del producto y ofrece ayuda al cliente."
-                )
-            elif original_caption:
-                user_message = (
-                    f"[El cliente envió una imagen con el mensaje: \"{original_caption}\"]\n\n"
-                    f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
-                    f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
-                    f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
-                )
+                if producto_identificado:
+                    user_message = (
+                        f"[El cliente envió una foto de un producto de nuestro catálogo"
+                        f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
+                        f"[Análisis de la imagen: {image_analysis}]\n\n"
+                        f"IMPORTANTE: La imagen SÍ es de nuestro catálogo. El producto fue identificado con los precios exactos del análisis. "
+                        f"NO envíes saludo de bienvenida ni link del catálogo — el cliente YA tiene el catálogo y está preguntando por un producto específico. "
+                        f"Usa los precios y el nombre del producto EXACTAMENTE como aparecen en el análisis de la imagen (no uses otros precios). "
+                        f"Responde directamente con la info del producto y ofrece ayuda al cliente."
+                    )
+                elif original_caption:
+                    user_message = (
+                        f"[El cliente envió una imagen con el mensaje: \"{original_caption}\"]\n\n"
+                        f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
+                        f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
+                        f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
+                    )
+                else:
+                    user_message = (
+                        f"[El cliente envió una imagen sin texto adicional]\n\n"
+                        f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
+                        f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
+                        f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
+                    )
             else:
-                user_message = (
-                    f"[El cliente envió una imagen sin texto adicional]\n\n"
-                    f"[Análisis de la imagen enviada por el cliente: {image_analysis}]\n\n"
-                    f"Responde al cliente sobre lo que envió en la imagen, usando el análisis anterior. "
-                    f"Si identificaste un producto del catálogo, da precios, disponibilidad y ofrece ayuda."
+                # Múltiples imágenes — combinar análisis numerados
+                alguno_identificado = any("PRODUCTO IDENTIFICADO" in a.upper() for a in analyses)
+                analyses_text = "\n\n".join(
+                    f"[Imagen {i+1} de {len(analyses)}]: {a}" for i, a in enumerate(analyses)
                 )
+
+                if alguno_identificado:
+                    user_message = (
+                        f"[El cliente envió {len(analyses)} fotos de productos de nuestro catálogo"
+                        f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
+                        f"{analyses_text}\n\n"
+                        f"IMPORTANTE: Las imágenes son de nuestro catálogo. Los productos fueron identificados con los precios exactos del análisis. "
+                        f"NO envíes saludo de bienvenida ni link del catálogo — el cliente YA tiene el catálogo y está preguntando por productos específicos. "
+                        f"Usa los precios y nombres de los productos EXACTAMENTE como aparecen en cada análisis. "
+                        f"Responde sobre TODOS los productos identificados y ofrece ayuda al cliente."
+                    )
+                else:
+                    user_message = (
+                        f"[El cliente envió {len(analyses)} imágenes"
+                        f"{' con el mensaje: ' + chr(34) + original_caption + chr(34) if original_caption else ''}]\n\n"
+                        f"{analyses_text}\n\n"
+                        f"Responde al cliente sobre lo que envió en las imágenes, usando los análisis anteriores."
+                    )
         
         # 6. Cargar historial de conversación
         memory = ConversationMemory(client.id, msg.phone_number)

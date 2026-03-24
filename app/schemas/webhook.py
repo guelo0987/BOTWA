@@ -158,4 +158,5 @@ class ProcessedMessage(BaseModel):
     content: str  # Texto o descripción
     contact_name: str  # Nombre del contacto
     media_id: str | None = None  # ID del media si aplica
+    extra_media_ids: list[str] | None = None  # IDs adicionales cuando hay múltiples imágenes
     raw_data: dict | None = None  # Datos originales
