@@ -110,6 +110,22 @@ async def receive_webhook(
                     msg_types = [m.type for m in value.messages]
                     logger.info(f"Webhook: {msg_count} mensaje(s) recibido(s), tipos={msg_types}")
                     for message in value.messages:
+                        # --- FILTRO DE MENSAJES VIEJOS (anti-retry de WhatsApp) ---
+                        # WhatsApp reintenta webhooks cuando el bot estuvo caído.
+                        # Ignorar mensajes con más de 5 minutos de antigüedad para no
+                        # procesar retries de conversaciones pasadas.
+                        try:
+                            msg_ts = int(message.timestamp)
+                            msg_age_seconds = time.time() - msg_ts
+                            if msg_age_seconds > 300:  # 5 minutos
+                                logger.warning(
+                                    f"Webhook: mensaje ignorado por antigüedad "
+                                    f"({int(msg_age_seconds)}s > 300s): {message.id}"
+                                )
+                                continue
+                        except Exception:
+                            pass  # Si falla la comprobación, procesar de todos modos
+
                         # --- DEDUPLICACIÓN ---
                         try:
                             redis = get_redis()
