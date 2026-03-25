@@ -265,6 +265,14 @@ TOOL_DEFINITIONS = [
                             type=types.Type.STRING,
                             description="Nuevo nombre para la factura/cita/reserva, si el cliente quiere cambiarlo"
                         ),
+                        "direccion": types.Schema(
+                            type=types.Type.STRING,
+                            description="Nueva dirección de entrega si el cliente quiere cambiarla (solo tiendas con delivery). Incluir el link de Google Maps si fue compartido."
+                        ),
+                        "precio_producto": types.Schema(
+                            type=types.Type.NUMBER,
+                            description="Precio del nuevo producto en números, sin símbolo de moneda. Pasar cuando el AI conoce el precio por haberlo leído del catálogo o imagen (catálogos PDF)."
+                        ),
                         "forzar_horario": types.Schema(
                             type=types.Type.BOOLEAN,
                             description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados"
@@ -1329,6 +1337,8 @@ class ToolExecutor:
             profesional_id = args.get("profesional_id")
             email = args.get("email")
             nombre_factura = args.get("nombre_factura")
+            nueva_direccion = args.get("direccion")
+            precio_producto_param = args.get("precio_producto")
 
             tz = pytz.timezone(self.config.get('timezone', 'America/Santo_Domingo'))
             
@@ -1437,6 +1447,21 @@ class ToolExecutor:
                             if precio_servicio:
                                 break
 
+                    # Si no se encontró en catálogo estructurado, usar precio pasado por el AI
+                    # (e.g. leído de imagen de catálogo PDF)
+                    if not precio_servicio and precio_producto_param is not None:
+                        try:
+                            producto_precio_val = float(precio_producto_param)
+                            delivery_fee = self.config.get("delivery_fee")
+                            total = producto_precio_val + (delivery_fee or 0)
+                            precio_servicio = f"{currency}{total:,.2f}"
+                            descripcion_extra += f"\nPrecio producto: {currency}{producto_precio_val:,.2f}"
+                            if delivery_fee:
+                                descripcion_extra += f"\nCosto envío: {currency}{delivery_fee:,.2f}"
+                            descripcion_extra += f"\nTotal: {precio_servicio}"
+                        except (ValueError, TypeError):
+                            pass
+
                     # Mantener info del profesional en notes
                     profesional_nombre = None
                     for prof in self.config.get("professionals", []):
@@ -1445,8 +1470,10 @@ class ToolExecutor:
                             descripcion_extra += f"\nProfesional: {profesional_nombre}"
                             break
 
-                    # Preservar dirección de la cita original
-                    if appointment.notes:
+                    # Dirección: usar la nueva si la AI la pasa, si no preservar la original
+                    if nueva_direccion:
+                        descripcion_extra += f"\n📍 Dirección: {nueva_direccion}"
+                    elif appointment.notes:
                         dir_match = _re.search(r'📍?\s*Dirección:\s*(.+)', appointment.notes)
                         if dir_match:
                             descripcion_extra += f"\n📍 Dirección: {dir_match.group(1).strip()}"
@@ -1577,9 +1604,10 @@ class ToolExecutor:
                     if effective_notes:
                         notes_parts = effective_notes.split('\n')
                         title = notes_parts[0] if notes_parts else title
-                    # Extraer dirección de las notas para el campo location de Calendar
-                    reschedule_location = ""
-                    if effective_notes:
+                    # Extraer dirección para el campo location de Calendar
+                    # Prioridad: nueva dirección pasada por AI > dirección en notes existentes
+                    reschedule_location = nueva_direccion or ""
+                    if not reschedule_location and effective_notes:
                         loc_match = _re.search(r'Dirección:\s*(.+)', effective_notes)
                         if loc_match:
                             reschedule_location = loc_match.group(1).strip()
@@ -1616,10 +1644,15 @@ class ToolExecutor:
                         appointment.invoice_name = nombre_factura
                     await session.commit()
                     
-                    # Guardar email si se proporciona
-                    if email:
+                    # Guardar email y/o nueva dirección si se proporcionan
+                    if email or nueva_direccion:
                         from app.services.client_service import client_service
-                        await client_service.update_customer_data(self.customer.id, {"email": email})
+                        update_data = {}
+                        if email:
+                            update_data["email"] = email
+                        if nueva_direccion:
+                            update_data["direccion"] = nueva_direccion
+                        await client_service.update_customer_data(self.customer.id, update_data)
                     
                     # Extraer profesional para el mensaje de confirmación
                     profesional_nombre = None
