@@ -249,7 +249,15 @@ def process_incoming_message(message, value) -> ProcessedMessage | None:
                 parts.append(f"Dirección: {loc_address}")
             parts.append(f"Coordenadas: {lat}, {lon}")
             parts.append(f"Google Maps: {maps_link}")
-            content = f"[Ubicación compartida por el cliente — puede ser dirección de entrega, dirección del cliente, o punto de referencia. Úsala en contexto con la conversación actual.]\n" + "\n".join(parts)
+            content = (
+                f"[Ubicación compartida por el cliente — puede ser dirección de entrega, "
+                f"dirección del cliente, o punto de referencia. Úsala en contexto con la conversación actual.]\n"
+                + "\n".join(parts)
+                + f"\n\n⚠️ INSTRUCCIÓN IMPORTANTE: Cuando agendes una entrega (crear_cita), "
+                f"pasa el link de Google Maps EXACTAMENTE como aparece arriba en el campo 'direccion'. "
+                f"NO uses tu conocimiento geográfico para inferir sector, municipio ni provincia — "
+                f"usa ÚNICAMENTE los datos exactos proporcionados aquí."
+            )
         
         elif message_type in ("sticker", "reaction", "contacts", "ephemeral", "unsupported"):
             # Tipos que no requieren procesamiento por IA

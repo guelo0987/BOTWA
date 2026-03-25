@@ -149,6 +149,10 @@ TOOL_DEFINITIONS = [
                             type=types.Type.STRING,
                             description="Nombre para la factura/cita/reserva. Para tiendas: a nombre de quién va la factura. Para citas/salones/clínicas: a nombre de quién va la cita. Para restaurantes: a nombre de quién va la reserva. Preguntar al cliente antes de confirmar."
                         ),
+                        "precio_producto": types.Schema(
+                            type=types.Type.NUMBER,
+                            description="Precio del producto en números, sin símbolo de moneda (ej: 25000, 1500.50). Pasar cuando el AI conoce el precio por haberlo leído del catálogo o imagen. Para tiendas con catálogo PDF, es OBLIGATORIO pasarlo si se identificó el precio."
+                        ),
                         "forzar_horario": types.Schema(
                             type=types.Type.BOOLEAN,
                             description="Poner en true SOLO si el system prompt indica que se puede agendar fuera de los horarios/días configurados (ej: profesional que trabaja domingos según instrucciones especiales)"
@@ -659,6 +663,7 @@ class ToolExecutor:
             ocasion = args.get("ocasion")
             detalles = args.get("detalles")
             nombre_factura = args.get("nombre_factura")
+            precio_producto_param = args.get("precio_producto")
 
             # Sanitizar inputs: remover HTML tags
             import re as _re
@@ -757,6 +762,14 @@ class ToolExecutor:
                                 break
                         if producto_precio:
                             break
+
+                # Si no se encontró en catálogo estructurado, usar el precio pasado por el AI
+                # (e.g. leído de imagen de catálogo PDF)
+                if producto_precio is None and precio_producto_param is not None:
+                    try:
+                        producto_precio = float(precio_producto_param)
+                    except (ValueError, TypeError):
+                        pass
 
                 # Extraer costo de envío del campo detalles (el AI pasa "Costo de envío: RD$750")
                 delivery_fee = None

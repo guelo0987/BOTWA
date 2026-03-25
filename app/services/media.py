@@ -229,21 +229,21 @@ class MediaService:
                 prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
 
 El catálogo de este negocio está en un PDF. NO tienes la lista de productos aquí.
-Tu trabajo es LEER con precisión lo que aparece en la imagen.
+Tu trabajo es LEER con precisión TODOS los detalles que aparecen en la imagen.
 
 TAREA:
 Analiza esta imagen que envió un cliente por WhatsApp.{user_caption}
 
-INSTRUCCIONES CRÍTICAS:
+INSTRUCCIONES CRÍTICAS — LEE TODA LA IMAGEN COMPLETA:
 1. Lee el TÍTULO EXACTO del producto tal como aparece en la imagen, incluyendo cualquier variante, modificador o subtipo que se muestre
-2. Lee TODOS los precios, medidas, tamaños o variantes que aparezcan, exactamente como están escritos
-3. Si ves un nombre de modelo o línea, inclúyelo tal cual
-4. Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [título/nombre exacto como aparece en la imagen]"
-5. Luego lista TODOS los precios y variantes visibles en la imagen, copiándolos textualmente
+2. Escribe EXACTAMENTE: "PRODUCTO IDENTIFICADO: [título/nombre exacto como aparece en la imagen]"
+3. Lista TODOS los sub-modelos, variantes o líneas del producto visibles en la imagen
+4. Copia TODOS los precios exactamente como aparecen escritos (no redondees, no cambies el formato)
+5. Copia TODAS las medidas, tamaños, capacidades, especificaciones técnicas o dimensiones visibles
+6. Si hay una tabla de precios o variantes, cópiala completa fila por fila
 
-IMPORTANTE: Lee el texto de la imagen LITERALMENTE. No inventes precios, no cambies nombres, no omitas palabras del título. Copia exactamente lo que ves.
-
-Responde en español, de forma concisa."""
+IMPORTANTE: Lee el texto de la imagen LITERALMENTE. No inventes ni omitas ningún dato.
+NO respondas de forma breve — incluye ABSOLUTAMENTE TODOS los detalles, modelos, sub-modelos y precios visibles en la imagen."""
             else:
                 prompt = f"""Eres el asistente virtual de {business_name} (tipo: {business_type}).
 
@@ -283,7 +283,7 @@ Responde en español, de forma concisa. Tu análisis será usado por el chat pri
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0.2 if catalog_is_pdf else 0.7,
-                    max_output_tokens=600,
+                    max_output_tokens=1500 if catalog_is_pdf else 600,
                 )
             )
             
