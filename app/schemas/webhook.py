@@ -13,7 +13,7 @@ class WhatsAppProfile(BaseModel):
 
 class WhatsAppContact(BaseModel):
     """Información de contacto"""
-    profile: WhatsAppProfile
+    profile: WhatsAppProfile | None = None
     wa_id: str  # Número de WhatsApp
 
 

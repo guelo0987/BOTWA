@@ -215,7 +215,7 @@ def process_incoming_message(message, value) -> ProcessedMessage | None:
         phone_number_id = value.metadata.phone_number_id
         
         contact_name = "Usuario"
-        if value.contacts:
+        if value.contacts and value.contacts[0].profile:
             contact_name = value.contacts[0].profile.name
         
         content = ""
